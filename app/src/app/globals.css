@@ -61,3 +61,64 @@ html, body {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+/* Win popup animations */
+@keyframes float-up {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px) scale(0.5);
+  }
+  15% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-5px) scale(1.1);
+  }
+  30% {
+    transform: translateX(-50%) translateY(-10px) scale(1);
+  }
+  100% {
+    transform: translateX(-50%) translateY(-10px) scale(1);
+  }
+}
+
+@keyframes float-away {
+  0% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-10px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-40px) scale(0.8);
+  }
+}
+
+@keyframes sparkle {
+  0%, 100% {
+    opacity: 0;
+    transform: scale(0) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1) rotate(180deg);
+  }
+}
+
+@keyframes gem-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 8px rgba(74, 222, 128, 0.8));
+  }
+  50% {
+    filter: drop-shadow(0 0 20px rgba(74, 222, 128, 1)) drop-shadow(0 0 40px rgba(74, 222, 128, 0.5));
+  }
+}
+
+.win-popup-enter {
+  animation: float-up 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.win-popup-visible {
+  animation: gem-glow 1s ease-in-out infinite;
+}
+
+.win-popup-exit {
+  animation: float-away 0.5s ease-out forwards;
+}

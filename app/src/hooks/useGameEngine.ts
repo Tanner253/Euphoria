@@ -13,6 +13,13 @@ import { getGameSounds } from '@/lib/audio/GameSounds';
 import { gameAPI } from '@/lib/services/GameAPI';
 import type { Bet, Column, GameState, VolatilityLevel } from '@/lib/game/types';
 
+export interface WinInfo {
+  amount: number;
+  id: string;
+  screenX: number;  // Screen X position of winning cell (for popup)
+  screenY: number;  // Screen Y position of winning cell (for popup)
+}
+
 interface UseGameEngineOptions {
   isMobile: boolean;
   balance: number;
@@ -21,7 +28,7 @@ interface UseGameEngineOptions {
   isAuthenticated: boolean;  // Whether user is authenticated
   sidebarWidth?: number;  // Width of left sidebar to offset canvas
   onBalanceChange: (newBalance: number) => void;  // Server-provided balance updates only
-  onWin: (winInfo: { amount: number; id: string }) => void;
+  onWin: (winInfo: WinInfo) => void;
   onTotalWonChange: (updater: (prev: number) => number) => void;
   onTotalLostChange: (updater: (prev: number) => number) => void;
   onError?: (error: string) => void;  // Error callback for bet failures
@@ -484,7 +491,13 @@ export function useGameEngine({
               onBalanceChange(balanceRef.current + winAmount);
               balanceRef.current += winAmount;
               onTotalWonChange(prev => prev + winAmount - bet.amount);
-              onWin({ amount: winAmount, id: bet.id });
+              
+              // Calculate screen position for win popup
+              const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+              const screenX = (col.x - state.offsetX + cellSize / 2) * cameraScale;
+              const screenY = (bet.yIndex * cellSize + state.cameraY) * cameraScale;
+              
+              onWin({ amount: winAmount, id: bet.id, screenX, screenY });
               playSound('win');
             } else {
               onTotalLostChange(prev => prev + bet.amount);
@@ -522,7 +535,17 @@ export function useGameEngine({
             // Server says WIN - update from server data
             const winAmount = serverBet.actualWin;
             onTotalWonChange(prev => prev + winAmount - bet.amount);
-            onWin({ amount: winAmount, id: bet.id });
+            
+            // Calculate screen position for win popup
+            // Need to find the column for this bet
+            const betCol = stateRef.current.columns.find(c => c.id === bet.colId);
+            const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+            const screenX = betCol 
+              ? (betCol.x - stateRef.current.offsetX + cellSize / 2) * cameraScale 
+              : headX * cameraScale;
+            const screenY = (bet.yIndex * cellSize + stateRef.current.cameraY) * cameraScale;
+            
+            onWin({ amount: winAmount, id: bet.id, screenX, screenY });
             playSound('win');
             
             // Refresh balance from server
@@ -773,7 +796,7 @@ export function useGameEngine({
         ctx.fillStyle = textColor;
         // Mobile fonts larger to compensate for camera zoom-out
         ctx.font = `bold ${isMobile ? 16 : 11}px sans-serif`;
-        ctx.fillText(`$${bet.amount}`, screenX + cellSize / 2, y + cellSize / 2 - (isMobile ? 6 : 6));
+        ctx.fillText(`💎${bet.amount}`, screenX + cellSize / 2, y + cellSize / 2 - (isMobile ? 6 : 6));
         
         ctx.font = `${isMobile ? 12 : 9}px sans-serif`;
         ctx.fillStyle = bet.status === 'lost' ? '#ef4444' : 'rgba(0,0,0,0.7)';
