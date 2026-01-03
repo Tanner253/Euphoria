@@ -48,6 +48,10 @@ export const GAME_CONFIG = {
   // Sidebar
   SIDEBAR_WIDTH: 56,
   SIDEBAR_WIDTH_MOBILE: 44,  // Narrower on mobile
+  
+  // Mobile camera zoom-out (visual only, doesn't affect game mechanics)
+  // 0.65 = render at 65% size, showing ~54% more of the grid
+  MOBILE_CAMERA_SCALE: 0.65,
 } as const;
 
 /**

@@ -154,7 +154,9 @@ export function useGameEngine({
     state.priceY = cellSize / 2;
     state.targetPriceY = cellSize / 2;
     state.priceHistory = [{ x: headX, y: cellSize / 2 }];
-    state.cameraY = window.innerHeight / 2;
+    // Use virtual height for camera (accounts for mobile zoom-out)
+    const initCameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+    state.cameraY = (window.innerHeight / initCameraScale) / 2;
     
     // Regenerate columns with proper cells using generateColumn pattern
     const priceY = cellSize / 2;
@@ -246,7 +248,10 @@ export function useGameEngine({
       onError?.('Insufficient balance');
       return false;
     }
-    if (screenX > window.innerWidth - priceAxisWidth) return false;
+    // Use canvas width (already accounts for sidebar) and scale it for mobile camera zoom
+    const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+    const virtualWidth = (canvasRef.current?.width ?? window.innerWidth) / cameraScale;
+    if (screenX > virtualWidth - priceAxisWidth) return false;
     
     const state = stateRef.current;
     const worldX = screenX + state.offsetX;
@@ -646,8 +651,10 @@ export function useGameEngine({
         state.priceHistory.shift();
       }
 
-      const height = canvas.height;
-      const targetCameraY = -state.priceY + height / 2;
+      // Use virtual height for camera centering (accounts for mobile zoom-out)
+      const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+      const virtualHeight = canvas.height / cameraScale;
+      const targetCameraY = -state.priceY + virtualHeight / 2;
       state.cameraY += (targetCameraY - state.cameraY) * 0.02;
 
       state.lastPrice = currentPrice;
@@ -658,24 +665,34 @@ export function useGameEngine({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       
-      const width = canvas.width;
-      const height = canvas.height;
+      const physicalWidth = canvas.width;
+      const physicalHeight = canvas.height;
       const state = stateRef.current;
       const currentPrice = priceRef.current ?? basePriceRef.current ?? 0;
+      
+      // Mobile camera scale - zooms out the view to show more grid
+      const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+      // Virtual dimensions (what we render to, scaled up so it fills physical canvas when scaled down)
+      const width = physicalWidth / cameraScale;
+      const height = physicalHeight / cameraScale;
 
-      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      // Clear at physical size first
+      const gradient = ctx.createLinearGradient(0, 0, 0, physicalHeight);
       gradient.addColorStop(0, '#12001f');
       gradient.addColorStop(0.5, GAME_CONFIG.BG_COLOR);
       gradient.addColorStop(1, '#08000f');
       ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(0, 0, physicalWidth, physicalHeight);
 
       ctx.save();
+      // Apply camera scale for mobile zoom-out effect
+      ctx.scale(cameraScale, cameraScale);
       ctx.translate(0, state.cameraY);
 
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `${isMobile ? 8 : 10}px "JetBrains Mono", "SF Mono", monospace`;
+      // Mobile fonts larger to compensate for camera zoom-out (0.65 scale)
+      ctx.font = `${isMobile ? 14 : 10}px "JetBrains Mono", "SF Mono", monospace`;
       
       const startColIndex = state.columns.findIndex(c => c.x + cellSize > state.offsetX);
       const currentHeadX = state.offsetX + headX;
@@ -754,10 +771,11 @@ export function useGameEngine({
         ctx.strokeRect(screenX + 3, y + 3, cellSize - 6, cellSize - 6);
 
         ctx.fillStyle = textColor;
-        ctx.font = `bold ${isMobile ? 9 : 11}px sans-serif`;
-        ctx.fillText(`$${bet.amount}`, screenX + cellSize / 2, y + cellSize / 2 - (isMobile ? 4 : 6));
+        // Mobile fonts larger to compensate for camera zoom-out
+        ctx.font = `bold ${isMobile ? 16 : 11}px sans-serif`;
+        ctx.fillText(`$${bet.amount}`, screenX + cellSize / 2, y + cellSize / 2 - (isMobile ? 6 : 6));
         
-        ctx.font = `${isMobile ? 7 : 9}px sans-serif`;
+        ctx.font = `${isMobile ? 12 : 9}px sans-serif`;
         ctx.fillStyle = bet.status === 'lost' ? '#ef4444' : 'rgba(0,0,0,0.7)';
         ctx.fillText(`${bet.multiplier.toFixed(2)}X`, screenX + cellSize / 2, y + cellSize / 2 + (isMobile ? 6 : 8));
       });
@@ -766,7 +784,8 @@ export function useGameEngine({
         ctx.shadowBlur = 20;
         ctx.shadowColor = GAME_CONFIG.PRICE_LINE_GLOW;
         ctx.strokeStyle = GAME_CONFIG.PRICE_LINE_COLOR;
-        ctx.lineWidth = isMobile ? 2 : 2.5;
+        // Mobile line thicker to compensate for camera zoom-out
+        ctx.lineWidth = isMobile ? 3.5 : 2.5;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         
@@ -785,13 +804,15 @@ export function useGameEngine({
         ctx.shadowColor = '#ffffff';
         ctx.fillStyle = '#ffffff';
         ctx.beginPath();
-        ctx.arc(headX, state.priceY, isMobile ? 5 : 6, 0, Math.PI * 2);
+        // Mobile circles larger to compensate for camera zoom-out
+        ctx.arc(headX, state.priceY, isMobile ? 9 : 6, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
         
         ctx.fillStyle = GAME_CONFIG.PRICE_LINE_COLOR;
         ctx.beginPath();
-        ctx.arc(headX, state.priceY, isMobile ? 2 : 3, 0, Math.PI * 2);
+        // Mobile circles larger to compensate for camera zoom-out
+        ctx.arc(headX, state.priceY, isMobile ? 4 : 3, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -811,7 +832,8 @@ export function useGameEngine({
       const displayPriceValue = priceRef.current ?? currentPrice ?? 100;
       const centerScreenY = height / 2;
       
-      ctx.font = `${isMobile ? 9 : 11}px "JetBrains Mono", monospace`;
+      // Mobile fonts larger to compensate for camera zoom-out
+      ctx.font = `${isMobile ? 15 : 11}px "JetBrains Mono", monospace`;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       
@@ -842,7 +864,8 @@ export function useGameEngine({
       ctx.fillStyle = GAME_CONFIG.PRICE_LINE_COLOR;
       ctx.fillRect(width - priceAxisWidth, centerScreenY - 12, priceAxisWidth, 24);
       ctx.fillStyle = '#fff';
-      ctx.font = `bold ${isMobile ? 10 : 12}px "JetBrains Mono", monospace`;
+      // Mobile fonts larger to compensate for camera zoom-out
+      ctx.font = `bold ${isMobile ? 17 : 12}px "JetBrains Mono", monospace`;
       ctx.fillText(`$${displayPriceValue.toFixed(2)}`, width - 6, centerScreenY);
       
       // Speed bar
@@ -908,13 +931,19 @@ export function useGameEngine({
     dragBetQueueRef.current = []; // Clear any stale queue
     lastBetCellRef.current = null;
     const rect = canvasRef.current!.getBoundingClientRect();
-    placeBetAt(e.clientX - rect.left, e.clientY - rect.top, true);
-  }, [placeBetAt]);
+    // Scale input coordinates for mobile camera zoom-out
+    const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+    const screenX = (e.clientX - rect.left) / cameraScale;
+    const screenY = (e.clientY - rect.top) / cameraScale;
+    placeBetAt(screenX, screenY, true);
+  }, [placeBetAt, isMobile]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current!.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
+    // Scale input coordinates for mobile camera zoom-out
+    const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+    const screenX = (e.clientX - rect.left) / cameraScale;
+    const screenY = (e.clientY - rect.top) / cameraScale;
     
     // Track hover position for effects
     const state = stateRef.current;
