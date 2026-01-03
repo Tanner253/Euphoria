@@ -22,12 +22,6 @@ const MAX_BET = 100; // Max 100 gems per bet
 const MIN_MULTIPLIER = 1.01;
 const MAX_MULTIPLIER = 50;
 
-// Base price per cell at 1x zoom - MUST match client: CELL_SIZE / PRICE_SCALE = 50/2500 = 0.02
-// Actual price per cell is calculated dynamically based on zoom level
-const PRICE_PER_CELL = 0.02;
-
-// Max allowed offset from price (prevents absurd bets)
-const MAX_BET_OFFSET = 100;
 
 interface PlaceBetRequest {
   sessionId: string;
@@ -139,7 +133,6 @@ export async function POST(request: NextRequest) {
     // For cell yIndex: yIndex * cellSize <= priceY < (yIndex + 1) * cellSize
     // Solving for price boundaries:
     const PRICE_SCALE = 2500;  // Must match GAME_CONFIG.PRICE_SCALE
-    const pricePerPixel = 1 / PRICE_SCALE;
     
     // Cell spans from y = yIndex * cellSize to y = (yIndex + 1) * cellSize
     // Convert Y boundaries to price boundaries

@@ -4,7 +4,7 @@
  * BetControls - Bet amount selection and quick bet buttons
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus, Minus } from 'lucide-react';
 
 interface BetControlsProps {
@@ -21,6 +21,14 @@ export default function BetControls({
   isMobile 
 }: BetControlsProps) {
   const MAX_BET = 100;
+  
+  // Must declare hooks before any conditional returns
+  const [inputValue, setInputValue] = useState(betAmount.toString());
+  
+  // Sync input with bet amount changes from buttons
+  useEffect(() => {
+    setInputValue(betAmount.toString());
+  }, [betAmount]);
   
   if (isMobile) {
     // Mobile: Compact horizontal bar at bottom
@@ -78,8 +86,6 @@ export default function BetControls({
   }
   
   // Desktop layout
-  const [inputValue, setInputValue] = useState(betAmount.toString());
-  
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.replace(/[^0-9]/g, '');
     setInputValue(value);
@@ -95,11 +101,6 @@ export default function BetControls({
     setInputValue(clamped.toString());
     onBetAmountChange(clamped);
   };
-  
-  // Sync input with bet amount changes from buttons
-  if (inputValue !== betAmount.toString() && document.activeElement?.tagName !== 'INPUT') {
-    setInputValue(betAmount.toString());
-  }
   
   return (
     <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30">
