@@ -142,8 +142,8 @@ export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
           }, delay);
         }
       };
-    } catch {
-      console.error('[SolanaPrice] Failed to create WebSocket:', e);
+    } catch (err) {
+      console.error('[SolanaPrice] Failed to create WebSocket:', err);
       setError('Failed to connect to price feed');
       
       // Try reconnecting with different provider

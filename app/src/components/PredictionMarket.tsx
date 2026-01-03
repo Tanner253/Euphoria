@@ -81,11 +81,6 @@ interface GameState {
   lastPrice: number | null;
 }
 
-const getY = (index: number) => index * CONFIG.CELL_SIZE;
-const getCellIndexForPrice = (priceY: number): number => {
-  return Math.floor((priceY + CONFIG.CELL_SIZE / 2) / CONFIG.CELL_SIZE);
-};
-
 const calculateMultiplier = (yIndex: number, currentPriceIndex: number): string => {
   const dist = Math.abs(yIndex - currentPriceIndex);
   let mult = 1.1 + Math.pow(dist, 1.3) * 0.2;
@@ -550,7 +545,7 @@ export default function PredictionMarket() {
     }
     
     state.lastGenX = xPosition;
-  }, [isMobile]);
+  }, [getCellSize]);
 
   const playSound = useCallback((type: 'win' | 'click' | 'lose') => {
     try {
@@ -1026,7 +1021,7 @@ export default function PredictionMarket() {
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [generateColumn, playSound, isMobile]);
+  }, [generateColumn, playSound, getCellSize, getHeadX, getPriceAxisWidth]);
 
   useEffect(() => {
     const handleResize = () => {
