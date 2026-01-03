@@ -26,6 +26,7 @@ interface UseGameEngineOptions {
   betAmount: number;
   sessionId: string;  // Game session ID for bet tracking
   isAuthenticated: boolean;  // Whether user is authenticated
+  isAutoPlaying?: boolean;  // Auto-play mode (infinite gems, no balance changes)
   sidebarWidth?: number;  // Width of left sidebar to offset canvas
   onBalanceChange: (newBalance: number) => void;  // Server-provided balance updates only
   onWin: (winInfo: WinInfo) => void;
@@ -48,6 +49,7 @@ interface UseGameEngineReturn {
   zoomIndex: number;
   cycleZoom: () => void;
   zoomLocked: boolean; // True when zoom is disabled due to active bets
+  placeBetAt: (screenX: number, screenY: number) => Promise<boolean>; // For auto-play
 }
 
 export function useGameEngine({
@@ -56,6 +58,7 @@ export function useGameEngine({
   betAmount,
   sessionId,
   isAuthenticated,
+  isAutoPlaying = false,
   sidebarWidth = 56,
   onBalanceChange,
   onWin,
@@ -243,15 +246,22 @@ export function useGameEngine({
     }
   }, []);
 
+  // Track auto-play state in ref for callbacks
+  const isAutoPlayingRef = useRef(isAutoPlaying);
+  useEffect(() => {
+    isAutoPlayingRef.current = isAutoPlaying;
+  }, [isAutoPlaying]);
+  
   const placeBetAt = useCallback(async (screenX: number, screenY: number, allowDuplicate = false) => {
     const currentBalance = balanceRef.current;
     const currentBetAmount = betAmountRef.current;
     const cellSize = getCellSize();
     const headX = getHeadX();
     const priceAxisWidth = getPriceAxisWidth();
+    const autoPlaying = isAutoPlayingRef.current;
     
-    // Client-side pre-check (balance is already deducted optimistically for pending bets)
-    if (currentBalance < currentBetAmount) {
+    // Client-side pre-check (skip if auto-playing - infinite gems)
+    if (!autoPlaying && currentBalance < currentBetAmount) {
       onError?.('Insufficient balance');
       return false;
     }
@@ -321,9 +331,12 @@ export function useGameEngine({
         setPendingBetsCount(prev => prev + 1);
         
         // IMMEDIATELY deduct balance (optimistic update for instant feedback)
-        const newBalance = currentBalance - currentBetAmount;
-        balanceRef.current = newBalance;
-        onBalanceChange(newBalance);
+        // Skip if auto-playing - infinite gems mode
+        if (!autoPlaying) {
+          const newBalance = currentBalance - currentBetAmount;
+          balanceRef.current = newBalance;
+          onBalanceChange(newBalance);
+        }
         
         // DEMO MODE: Done - no server call needed
         if (!isAuthenticated) {
@@ -485,11 +498,15 @@ export function useGameEngine({
           // DEMO MODE: Resolve client-side
           if (!bet.serverId) {
             bet.status = isWin ? 'won' : 'lost';
+            const autoPlaying = isAutoPlayingRef.current;
             
             if (isWin) {
               const winAmount = bet.amount * bet.multiplier;
-              onBalanceChange(balanceRef.current + winAmount);
-              balanceRef.current += winAmount;
+              // Skip balance changes in auto-play mode (infinite gems)
+              if (!autoPlaying) {
+                onBalanceChange(balanceRef.current + winAmount);
+                balanceRef.current += winAmount;
+              }
               onTotalWonChange(prev => prev + winAmount - bet.amount);
               
               // Calculate screen position for win popup
@@ -500,7 +517,10 @@ export function useGameEngine({
               onWin({ amount: winAmount, id: bet.id, screenX, screenY });
               playSound('win');
             } else {
-              onTotalLostChange(prev => prev + bet.amount);
+              // Skip loss tracking in auto-play mode
+              if (!autoPlaying) {
+                onTotalLostChange(prev => prev + bet.amount);
+              }
               playSound('lose');
             }
             setPendingBetsCount(prev => Math.max(0, prev - 1));
@@ -1133,6 +1153,7 @@ export function useGameEngine({
     zoomIndex,
     cycleZoom,
     zoomLocked: hasActiveBets,
+    placeBetAt,
   };
 }
 

@@ -93,6 +93,9 @@ async function verifyDepositOnChain(
   }
 }
 
+// In-flight request tracking to prevent race conditions
+const processingDeposits = new Map<string, Promise<NextResponse>>();
+
 /**
  * Check if a transaction has already been processed
  */
@@ -134,6 +137,39 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // RACE CONDITION FIX: Check if this exact request is already being processed
+    const existingRequest = processingDeposits.get(txSignature);
+    if (existingRequest) {
+      logger.info('[Deposit] Duplicate request detected, returning existing promise', {
+        wallet: walletAddress.slice(0, 8),
+        sig: txSignature.slice(0, 16)
+      });
+      return existingRequest;
+    }
+    
+    // Create and store the processing promise
+    const processPromise = processDeposit(walletAddress, txSignature);
+    processingDeposits.set(txSignature, processPromise);
+    
+    try {
+      const result = await processPromise;
+      return result;
+    } finally {
+      // Clean up after processing (with small delay to catch rapid duplicates)
+      setTimeout(() => processingDeposits.delete(txSignature), 5000);
+    }
+    
+  } catch (error) {
+    logger.error('[API] Deposit error', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+async function processDeposit(walletAddress: string, txSignature: string): Promise<NextResponse> {
+  try {
     const transactionService = TransactionService.getInstance();
     const custodialAddress = transactionService.getCustodialWalletAddress();
     
@@ -222,7 +258,7 @@ export async function POST(request: NextRequest) {
     });
     
   } catch (error) {
-    logger.error('[API] Deposit error', error);
+    logger.error('[API] Deposit processing error', error);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

@@ -10,7 +10,7 @@
  * 4. Server verifies signature → Gems credited
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   X, 
   Gem, 
@@ -24,6 +24,9 @@ import {
 import { useWallet } from '@/contexts/WalletContext';
 import SolanaLogo from '@/components/ui/SolanaLogo';
 import PhantomWallet from '@/lib/wallet/PhantomWallet';
+
+// Debounce delay in ms - prevents rapid clicks
+const DEBOUNCE_DELAY = 1000;
 
 interface GemsModalProps {
   isOpen: boolean;
@@ -78,6 +81,13 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
   const [withdrawing, setWithdrawing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [pendingWithdrawal, setPendingWithdrawal] = useState<PendingWithdrawal | null>(null);
+  
+  // DEBOUNCE: Track in-flight requests to prevent rapid clicks
+  const purchaseInFlightRef = useRef(false);
+  const withdrawInFlightRef = useRef(false);
+  const cancelInFlightRef = useRef(false);
+  const lastPurchaseTimeRef = useRef(0);
+  const lastWithdrawTimeRef = useRef(0);
 
   // Fetch rates on open
   useEffect(() => {
@@ -131,6 +141,13 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
    * 4. Server credits gems
    */
   const handlePurchase = useCallback(async (solAmount: number) => {
+    // DEBOUNCE: Prevent rapid clicks
+    const now = Date.now();
+    if (purchaseInFlightRef.current || now - lastPurchaseTimeRef.current < DEBOUNCE_DELAY) {
+      console.log('🛑 Purchase debounced - request already in flight or too soon');
+      return;
+    }
+    
     if (!isAuthenticated || !authToken || !rates?.custodialWallet) {
       setError('Please connect your wallet first');
       return;
@@ -141,6 +158,9 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
       return;
     }
     
+    // Mark as in-flight BEFORE any async operations
+    purchaseInFlightRef.current = true;
+    lastPurchaseTimeRef.current = now;
     setIsPurchasing(true);
     setError(null);
     setSuccess(null);
@@ -203,10 +223,18 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
       setError(userMessage);
     } finally {
       setIsPurchasing(false);
+      purchaseInFlightRef.current = false;
     }
   }, [isAuthenticated, authToken, rates, refreshBalance]);
 
   const handleWithdraw = async () => {
+    // DEBOUNCE: Prevent rapid clicks
+    const now = Date.now();
+    if (withdrawInFlightRef.current || now - lastWithdrawTimeRef.current < DEBOUNCE_DELAY) {
+      console.log('🛑 Withdrawal debounced - request already in flight or too soon');
+      return;
+    }
+    
     if (!authToken || !rates) return;
     
     const amount = parseInt(withdrawAmount);
@@ -220,6 +248,9 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
       return;
     }
     
+    // Mark as in-flight BEFORE any async operations
+    withdrawInFlightRef.current = true;
+    lastWithdrawTimeRef.current = now;
     setWithdrawing(true);
     setError(null);
     setSuccess(null);
@@ -262,12 +293,21 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
       setError('Network error - please try again');
     } finally {
       setWithdrawing(false);
+      withdrawInFlightRef.current = false;
     }
   };
 
   const handleCancelWithdrawal = async () => {
+    // DEBOUNCE: Prevent rapid clicks
+    if (cancelInFlightRef.current) {
+      console.log('🛑 Cancel debounced - request already in flight');
+      return;
+    }
+    
     if (!authToken || !pendingWithdrawal) return;
     
+    // Mark as in-flight BEFORE any async operations
+    cancelInFlightRef.current = true;
     setCancelling(true);
     setError(null);
     setSuccess(null);
@@ -294,6 +334,7 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
       setError('Network error - please try again');
     } finally {
       setCancelling(false);
+      cancelInFlightRef.current = false;
     }
   };
 

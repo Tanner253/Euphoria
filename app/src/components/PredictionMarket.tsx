@@ -10,6 +10,7 @@ import { useSolanaPrice } from '@/hooks/useSolanaPrice';
 import { useWallet } from '@/contexts/WalletContext';
 import { useGameEngine, WinInfo } from '@/hooks/useGameEngine';
 import { useArcadeMusic } from '@/hooks/useArcadeMusic';
+import { useAutoPlay } from '@/hooks/useAutoPlay';
 import { GAME_CONFIG } from '@/lib/game/gameConfig';
 import { 
   BetControls, 
@@ -19,7 +20,7 @@ import {
   SplashScreen 
 } from '@/components/game';
 import WalletAuth from './WalletAuth';
-import { Gem } from 'lucide-react';
+import { Gem, Bot } from 'lucide-react';
 
 export default function PredictionMarket() {
   // External hooks
@@ -39,6 +40,7 @@ export default function PredictionMarket() {
   const [showSplash, setShowSplash] = useState(true);
   const [showWalletAuth, setShowWalletAuth] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [isAutoPlaying, setIsAutoPlaying] = useState(false);
   
   // Balance management - use server balance when authenticated
   const [localBalance, setLocalBalance] = useState<number>(GAME_CONFIG.INITIAL_BALANCE);
@@ -100,17 +102,33 @@ export default function PredictionMarket() {
     zoomIndex,
     cycleZoom,
     zoomLocked,
+    placeBetAt,
   } = useGameEngine({
     isMobile,
     balance,
     betAmount,
     sessionId: 'game-session',
     isAuthenticated,
+    isAutoPlaying,
     sidebarWidth,
     onBalanceChange: setBalance,
     onWin: handleWin,
     onTotalWonChange: setTotalWon,
     onTotalLostChange: setTotalLost,
+  });
+  
+  // Auto-play for development testing (only available in NODE_ENV=development)
+  const { toggleAutoPlay, canAutoPlay } = useAutoPlay({
+    isEnabled: !showSplash && !showWalletAuth && !showRoadmap && !showGemsModal,
+    isAutoPlaying,
+    setIsAutoPlaying,
+    canvasRef,
+    currentPrice: price,
+    balance,
+    betAmount,
+    isMobile,
+    sidebarWidth,
+    onPlaceBet: placeBetAt,
   });
 
   // Check for mobile
@@ -264,6 +282,26 @@ export default function PredictionMarket() {
           isMobile={isMobile}
         />
       </div>
+      
+      {/* Auto-Play Toggle - DEV ONLY */}
+      {canAutoPlay && (
+        <button
+          onClick={toggleAutoPlay}
+          className={`
+            fixed bottom-24 right-4 z-40 px-4 py-2.5 rounded-xl 
+            flex items-center gap-2 font-bold text-sm
+            transition-all shadow-lg border-2
+            ${isAutoPlaying 
+              ? 'bg-green-500/90 border-green-400 text-white shadow-green-500/30 animate-pulse' 
+              : 'bg-black/70 border-yellow-500/50 text-yellow-400 hover:bg-black/90 hover:border-yellow-400'
+            }
+          `}
+          title="Auto-Play Demo Mode (DEV ONLY)"
+        >
+          <Bot size={18} className={isAutoPlaying ? 'animate-bounce' : ''} />
+          <span>{isAutoPlaying ? 'AUTO: ON' : 'AUTO: OFF'}</span>
+        </button>
+      )}
 
       {/* Roadmap Modal */}
       <RoadmapModal 

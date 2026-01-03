@@ -16,6 +16,9 @@ import bs58 from 'bs58';
 import logger from '@/lib/utils/secureLogger';
 import * as WithdrawalQueue from '@/lib/db/models/WithdrawalQueue';
 
+// In-flight request tracking to prevent race conditions
+const processingWithdrawals = new Map<string, Promise<NextResponse>>();
+
 /**
  * Confirm a transaction using HTTP polling instead of WebSocket subscription.
  * This avoids the "t.mask is not a function" error in serverless environments.
@@ -121,6 +124,38 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // RACE CONDITION FIX: Check if this wallet already has an in-flight request
+    const existingRequest = processingWithdrawals.get(walletAddress);
+    if (existingRequest) {
+      logger.info('[Withdrawal] Duplicate request detected, returning existing promise', {
+        wallet: walletAddress.slice(0, 8)
+      });
+      return existingRequest;
+    }
+    
+    // Create and store the processing promise
+    const processPromise = processWithdrawal(walletAddress, gemsAmount);
+    processingWithdrawals.set(walletAddress, processPromise);
+    
+    try {
+      const result = await processPromise;
+      return result;
+    } finally {
+      // Clean up after processing (with delay to catch rapid duplicates)
+      setTimeout(() => processingWithdrawals.delete(walletAddress), 5000);
+    }
+    
+  } catch (error) {
+    logger.error('[API] Withdrawal error', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+async function processWithdrawal(walletAddress: string, gemsAmount: number): Promise<NextResponse> {
+  try {
     // SECURITY: Check for existing pending withdrawal
     const hasPending = await WithdrawalQueue.hasPendingWithdrawal(walletAddress);
     if (hasPending) {
@@ -257,7 +292,7 @@ export async function POST(request: NextRequest) {
     });
     
   } catch (error) {
-    logger.error('[API] Withdrawal error', error);
+    logger.error('[API] Withdrawal processing error', error);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

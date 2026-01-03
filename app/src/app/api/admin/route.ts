@@ -3,6 +3,9 @@
  * Admin dashboard data - DEVELOPMENT ONLY
  * 
  * Returns comprehensive live data from database for monitoring
+ * 
+ * POST /api/admin
+ * Admin actions (cleanup, etc.) - DEVELOPMENT ONLY
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -316,5 +319,232 @@ export async function GET(request: NextRequest) {
       hourlyStats: [],
       dailyStats: [],
     });
+  }
+}
+
+/**
+ * POST /api/admin
+ * Admin actions - DEVELOPMENT ONLY
+ * 
+ * Supported actions:
+ * - cleanup_pending_deposits: Remove orphaned pending deposits (no txSignature)
+ * - cleanup_pending_withdrawals: Cancel orphaned pending withdrawals
+ */
+export async function POST(request: NextRequest) {
+  // SECURITY: Block in production
+  if (!isDevelopment()) {
+    return NextResponse.json(
+      { error: 'Not available in production' },
+      { status: 403 }
+    );
+  }
+  
+  try {
+    const body = await request.json();
+    const { action } = body;
+    
+    if (!action) {
+      return NextResponse.json(
+        { error: 'Missing action parameter' },
+        { status: 400 }
+      );
+    }
+    
+    const { db } = await connectToDatabase();
+    const transactionsCollection = db.collection('transactions');
+    const auditService = AuditService.getInstance();
+    
+    switch (action) {
+      case 'cleanup_pending_deposits': {
+        // Find and delete pending deposits without txSignature (orphaned)
+        // Check for both missing field and null value
+        const result = await transactionsCollection.deleteMany({
+          type: 'deposit',
+          status: 'pending',
+          $or: [
+            { txSignature: { $exists: false } },
+            { txSignature: null }
+          ]
+        });
+        
+        await auditService.log({
+          action: 'admin_cleanup',
+          description: `Deleted ${result.deletedCount} orphaned pending deposits`,
+        });
+        
+        return NextResponse.json({
+          success: true,
+          action: 'cleanup_pending_deposits',
+          deletedCount: result.deletedCount,
+          message: `Deleted ${result.deletedCount} orphaned pending deposits`
+        });
+      }
+      
+      case 'cleanup_pending_withdrawals': {
+        // Find pending withdrawals without txSignature and refund them
+        // Check for both missing field and null value
+        const pendingWithdrawals = await transactionsCollection.find({
+          type: 'withdrawal',
+          status: 'pending',
+          $or: [
+            { txSignature: { $exists: false } },
+            { txSignature: null }
+          ]
+        }).toArray();
+        
+        const userService = UserService.getInstance();
+        let refundedCount = 0;
+        let refundedGems = 0;
+        
+        for (const withdrawal of pendingWithdrawals) {
+          // Refund the gems
+          await userService.updateBalance(
+            withdrawal.walletAddress,
+            withdrawal.gemsAmount,
+            `Admin cleanup: Refunded ${withdrawal.gemsAmount} gems from orphaned withdrawal`
+          );
+          refundedGems += withdrawal.gemsAmount;
+          refundedCount++;
+        }
+        
+        // Mark them as cancelled
+        const result = await transactionsCollection.updateMany(
+          {
+            type: 'withdrawal',
+            status: 'pending',
+            $or: [
+              { txSignature: { $exists: false } },
+              { txSignature: null }
+            ]
+          },
+          {
+            $set: {
+              status: 'cancelled',
+              notes: 'Admin cleanup: orphaned withdrawal'
+            }
+          }
+        );
+        
+        await auditService.log({
+          action: 'admin_cleanup',
+          description: `Cancelled ${result.modifiedCount} orphaned pending withdrawals, refunded ${refundedGems} gems`,
+        });
+        
+        return NextResponse.json({
+          success: true,
+          action: 'cleanup_pending_withdrawals',
+          cancelledCount: result.modifiedCount,
+          refundedCount,
+          refundedGems,
+          message: `Cancelled ${result.modifiedCount} orphaned withdrawals, refunded ${refundedGems} gems`
+        });
+      }
+      
+      case 'cleanup_all_pending': {
+        // Clean up both deposits and withdrawals
+        
+        // 1. Delete orphaned pending deposits (no txSignature)
+        const depositResult = await transactionsCollection.deleteMany({
+          type: 'deposit',
+          status: 'pending',
+          $or: [
+            { txSignature: { $exists: false } },
+            { txSignature: null }
+          ]
+        });
+        
+        // 2. Cancel and refund orphaned pending withdrawals (no txSignature)
+        const pendingWithdrawals = await transactionsCollection.find({
+          type: 'withdrawal',
+          status: 'pending',
+          $or: [
+            { txSignature: { $exists: false } },
+            { txSignature: null }
+          ]
+        }).toArray();
+        
+        const userService = UserService.getInstance();
+        let refundedGems = 0;
+        
+        for (const withdrawal of pendingWithdrawals) {
+          await userService.updateBalance(
+            withdrawal.walletAddress,
+            withdrawal.gemsAmount,
+            `Admin cleanup: Refunded ${withdrawal.gemsAmount} gems from orphaned withdrawal`
+          );
+          refundedGems += withdrawal.gemsAmount;
+        }
+        
+        const withdrawalResult = await transactionsCollection.updateMany(
+          {
+            type: 'withdrawal',
+            status: 'pending',
+            $or: [
+              { txSignature: { $exists: false } },
+              { txSignature: null }
+            ]
+          },
+          {
+            $set: {
+              status: 'cancelled',
+              notes: 'Admin cleanup: orphaned withdrawal'
+            }
+          }
+        );
+        
+        await auditService.log({
+          action: 'admin_cleanup',
+          description: `Cleanup: Deleted ${depositResult.deletedCount} orphaned deposits, cancelled ${withdrawalResult.modifiedCount} withdrawals, refunded ${refundedGems} gems`,
+        });
+        
+        return NextResponse.json({
+          success: true,
+          action: 'cleanup_all_pending',
+          deposits: {
+            deletedCount: depositResult.deletedCount
+          },
+          withdrawals: {
+            cancelledCount: withdrawalResult.modifiedCount,
+            refundedGems
+          },
+          message: `Deleted ${depositResult.deletedCount} orphaned deposits, cancelled ${withdrawalResult.modifiedCount} withdrawals, refunded ${refundedGems} gems`
+        });
+      }
+      
+      case 'delete_all_pending_deposits': {
+        // AGGRESSIVE: Delete ALL pending deposits (for recovery from attacks)
+        const result = await transactionsCollection.deleteMany({
+          type: 'deposit',
+          status: 'pending'
+        });
+        
+        await auditService.log({
+          action: 'admin_cleanup',
+          description: `AGGRESSIVE: Deleted ALL ${result.deletedCount} pending deposits`,
+        });
+        
+        return NextResponse.json({
+          success: true,
+          action: 'delete_all_pending_deposits',
+          deletedCount: result.deletedCount,
+          message: `Deleted ALL ${result.deletedCount} pending deposits`
+        });
+      }
+      
+      default:
+        return NextResponse.json(
+          { error: `Unknown action: ${action}` },
+          { status: 400 }
+        );
+    }
+    
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin API] POST Error:', message);
+    
+    return NextResponse.json(
+      { error: `API Error: ${message}` },
+      { status: 500 }
+    );
   }
 }
