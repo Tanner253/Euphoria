@@ -219,9 +219,33 @@ async function processDeposit(walletAddress: string, txSignature: string): Promi
       );
     }
     
-    // Create and immediately confirm the deposit (it's already on-chain)
-    const deposit = await transactionService.createDeposit(walletAddress, solAmount);
+    // ATOMIC: Create deposit with txSignature (prevents duplicates via unique index)
+    const { transaction: deposit, isNew } = await transactionService.createDeposit(
+      walletAddress, 
+      solAmount,
+      txSignature
+    );
     
+    // If deposit already exists and is confirmed, return success (idempotent)
+    if (!isNew && deposit.status === 'confirmed') {
+      logger.info('[Deposit] Already processed (idempotent)', { 
+        wallet: walletAddress.slice(0, 8),
+        sig: txSignature.slice(0, 16)
+      });
+      
+      return NextResponse.json({
+        success: true,
+        transaction: {
+          id: deposit._id?.toString(),
+          gemsAmount: deposit.gemsAmount,
+          solAmount: deposit.solAmount,
+          txSignature,
+          status: 'confirmed'
+        }
+      });
+    }
+    
+    // Confirm the deposit (credit gems to user)
     const confirmed = await transactionService.confirmDeposit(
       deposit._id!.toString(),
       txSignature,

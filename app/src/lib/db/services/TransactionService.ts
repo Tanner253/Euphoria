@@ -40,10 +40,26 @@ export class TransactionService {
     
     // Ensure indexes once per instance lifetime
     if (!this.indexesEnsured) {
+      // Unique index on txSignature (sparse - only indexed when field exists)
       await collection.createIndex(
         { txSignature: 1 }, 
         { unique: true, sparse: true }
       ).catch(() => {}); // Index may already exist
+      
+      // SECURITY: Partial unique index - only ONE pending withdrawal per wallet
+      // This prevents race conditions at the database level
+      await collection.createIndex(
+        { walletAddress: 1, type: 1 },
+        { 
+          unique: true, 
+          partialFilterExpression: { 
+            type: 'withdrawal', 
+            status: 'pending' 
+          },
+          name: 'unique_pending_withdrawal_per_wallet'
+        }
+      ).catch(() => {}); // Index may already exist
+      
       this.indexesEnsured = true;
     }
     
@@ -74,40 +90,57 @@ export class TransactionService {
   }
 
   /**
-   * Create a pending deposit transaction
-   * Called when user sends SOL to custodial wallet via Phantom
+   * Create a deposit transaction atomically
+   * SECURITY: Uses findOneAndUpdate with upsert to prevent duplicate deposits
+   * The txSignature unique index ensures only one record per transaction
    */
   async createDeposit(
     walletAddress: string,
-    solAmount: number // in lamports
-  ): Promise<Transaction> {
+    solAmount: number, // in lamports
+    txSignature: string // REQUIRED: Must have signature for atomic creation
+  ): Promise<{ transaction: Transaction; isNew: boolean }> {
     const collection = await this.getCollection();
     
     const gemsAmount = this.calculateGemsForSol(solAmount);
     
-    const transaction: Transaction = {
-      walletAddress,
-      type: 'deposit',
-      status: 'pending',
-      solAmount,
-      gemsAmount,
-      destinationAddress: getCustodialAddress(), // SOL sent to custodial
-      createdAt: new Date(),
-    };
+    // SECURITY: Atomic upsert - creates new OR returns existing
+    // The unique index on txSignature prevents duplicates
+    const result = await collection.findOneAndUpdate(
+      { txSignature }, // Find by signature
+      {
+        $setOnInsert: {
+          walletAddress,
+          type: 'deposit' as const,
+          status: 'pending' as const,
+          solAmount,
+          gemsAmount,
+          txSignature,
+          destinationAddress: getCustodialAddress(),
+          createdAt: new Date(),
+        }
+      },
+      { 
+        upsert: true, 
+        returnDocument: 'after' 
+      }
+    );
     
-    const result = await collection.insertOne(transaction);
-    transaction._id = result.insertedId;
+    const transaction = result!;
+    const isNew = !result?.confirmedAt; // If no confirmedAt, it was just created
     
-    await AuditService.getInstance().log({
-      walletAddress,
-      action: 'deposit_initiated',
-      description: `Deposit initiated: ${solAmount / 1e9} SOL = ${gemsAmount} gems`,
-      relatedId: result.insertedId.toString(),
-      relatedCollection: 'transactions',
-      newValue: { solAmount, gemsAmount },
-    });
+    // Only log if this is a new deposit
+    if (isNew && transaction.status === 'pending') {
+      await AuditService.getInstance().log({
+        walletAddress,
+        action: 'deposit_initiated',
+        description: `Deposit initiated: ${solAmount / 1e9} SOL = ${gemsAmount} gems`,
+        relatedId: transaction._id!.toString(),
+        relatedCollection: 'transactions',
+        newValue: { solAmount, gemsAmount, txSignature: txSignature.slice(0, 16) },
+      });
+    }
     
-    return transaction;
+    return { transaction, isNew };
   }
 
   /**
@@ -369,8 +402,24 @@ export class TransactionService {
       createdAt: new Date(),
     };
     
-    const result = await collection.insertOne(transaction);
-    transaction._id = result.insertedId;
+    // SECURITY: Try to insert - will fail if duplicate due to unique partial index
+    try {
+      const result = await collection.insertOne(transaction);
+      transaction._id = result.insertedId;
+    } catch (err: unknown) {
+      // Check if it's a duplicate key error (code 11000)
+      const mongoError = err as { code?: number };
+      if (mongoError.code === 11000) {
+        logger.warn('[Transaction] Duplicate withdrawal blocked by index', {
+          wallet: walletAddress.slice(0, 8)
+        });
+        return { 
+          success: false, 
+          error: 'You already have a pending withdrawal. Please wait for it to complete.' 
+        };
+      }
+      throw err; // Re-throw other errors
+    }
     
     // Deduct from user balance immediately (prevents double-spend)
     await UserService.getInstance().updateBalance(
@@ -383,7 +432,7 @@ export class TransactionService {
       walletAddress,
       action: 'withdrawal_initiated',
       description: `Withdrawal initiated: ${gemsAmount} gems (${feeAmount} fee) = ${solAmount / 1e9} SOL`,
-      relatedId: result.insertedId.toString(),
+      relatedId: transaction._id!.toString(),
       relatedCollection: 'transactions',
       newValue: { gemsAmount, feeAmount, solAmount, destinationAddress: destinationAddress.slice(0, 8) },
     });
