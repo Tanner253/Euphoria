@@ -159,7 +159,7 @@ export class TransactionService {
           }
         }
       );
-    } catch (error) {
+    } catch {
       // Unique constraint violation - signature already exists
       logger.warn('[Transaction] Signature conflict', {
         wallet: transaction.walletAddress.slice(0, 8)

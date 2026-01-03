@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection } from '@solana/web3.js';
 import { getAuthenticatedWallet } from '@/lib/auth/jwt';
 import { TransactionService } from '@/lib/db/services';
 import logger from '@/lib/utils/secureLogger';

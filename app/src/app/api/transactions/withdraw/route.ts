@@ -163,7 +163,7 @@ export async function POST(request: NextRequest) {
             }
           });
           
-        } catch (txError) {
+        } catch {
           // Transaction failed - fall through to queue
           logger.warn('[Withdrawal] Instant payout failed, queueing', {
             wallet: walletAddress.slice(0, 8)

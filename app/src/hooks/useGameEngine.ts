@@ -104,34 +104,16 @@ export function useGameEngine({
   
   // Track tab visibility to handle price jumps smoothly
   const lastFrameTimeRef = useRef<number>(Date.now());
-  const wasHiddenRef = useRef<boolean>(false);
   
   // Hover and animation state
   const hoverCellRef = useRef<{ colId: string; yIndex: number } | null>(null);
   const mouseWorldPosRef = useRef<{ x: number; y: number } | null>(null);
   
-  // Win animation particles
-  interface WinParticle {
-    x: number;
-    y: number;
-    vx: number;
-    vy: number;
-    life: number;
-    maxLife: number;
-    color: string;
-    size: number;
-  }
-  const winParticlesRef = useRef<WinParticle[]>([]);
-  
-  // Win celebration pulse effect
-  interface WinPulse {
-    x: number;
-    y: number;
-    radius: number;
-    maxRadius: number;
-    alpha: number;
-  }
-  const winPulsesRef = useRef<WinPulse[]>([]);
+  // Win animation particles (reserved for future animation enhancements)
+  // interface WinParticle { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number; }
+  // const winParticlesRef = useRef<WinParticle[]>([]);
+  // interface WinPulse { x: number; y: number; radius: number; maxRadius: number; alpha: number; }
+  // const winPulsesRef = useRef<WinPulse[]>([]);
 
   // Keep refs in sync
   useEffect(() => { balanceRef.current = balance; }, [balance]);
@@ -402,7 +384,7 @@ export function useGameEngine({
             setPendingBetsCount(prev => Math.max(0, prev - 1));
             return false;
           }
-        } catch (error) {
+        } catch {
           // Network error - REFUND the optimistic deduction
           const betIndex = state.bets.findIndex(b => b.id === localBetId);
           if (betIndex !== -1) {
@@ -719,7 +701,7 @@ export function useGameEngine({
         const endY = -state.cameraY + height + cellSize * 3;
         const isBettable = col.x > currentHeadX + cellSize * GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
 
-        Object.entries(col.cells).forEach(([yIdx, cell]) => {
+        Object.entries(col.cells).forEach(([yIdx]) => {
           const yIndex = parseInt(yIdx);
           const y = yIndex * cellSize;
           if (y < startY || y > endY) return;
@@ -1038,7 +1020,7 @@ export function useGameEngine({
           onBalanceChange(balanceRef.current);
           onError?.(result.error || 'Failed to place bets');
         }
-      } catch (error) {
+      } catch {
         // Network error - refund all queued bets
         const state = stateRef.current;
         for (const queuedBet of queue) {

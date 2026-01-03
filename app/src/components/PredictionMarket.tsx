@@ -165,8 +165,8 @@ export default function PredictionMarket() {
             height: '100vh',
             touchAction: 'none'  // Critical for mobile touch handling
           }}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
           onPointerUp={handlePointerUp}
           onPointerLeave={handlePointerLeave}
         />

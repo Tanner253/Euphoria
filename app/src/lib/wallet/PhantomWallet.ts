@@ -359,7 +359,7 @@ class PhantomWallet {
             preflightCommitment: 'confirmed'
           });
           console.log(`✅ SOL sent! Tx: ${signature}`);
-        } catch (sendError) {
+        } catch {
           // Fallback to sign + send
           console.warn('⚠️ sendTransaction failed, using fallback');
           const signedTx = await provider.signTransaction(transaction) as { serialize: () => Buffer };

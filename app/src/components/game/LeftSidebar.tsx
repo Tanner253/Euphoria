@@ -64,7 +64,7 @@ const RISK_LEVELS = [
 export default function LeftSidebar({
   displayPrice,
   priceDirection,
-  priceConnected,
+  priceConnected: _priceConnected,
   volatilityLevel,
   balance,
   totalWon,
@@ -91,12 +91,10 @@ export default function LeftSidebar({
   const [showRiskTooltip, setShowRiskTooltip] = useState(false);
   
   // Arcade music
-  const { isPlaying: isMusicPlaying, toggle: toggleMusic, tryAutoStart } = useArcadeMusic();
+  const { isPlaying: isMusicPlaying, toggle: toggleMusic } = useArcadeMusic();
   
-  // Auto-start music on first button click
-  const handleMusicToggle = () => {
-    toggleMusic();
-  };
+  // Suppress unused variable warning (kept for future use)
+  void _priceConnected;
   
   // Use server balance if authenticated, otherwise use demo balance
   const displayBalance = isAuthenticated ? gemsBalance : balance;
