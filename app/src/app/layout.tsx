@@ -34,7 +34,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body
-        className={`${spaceGrotesk.variable} ${jetbrainsMono.variable} font-sans antialiased bg-black text-white overflow-hidden`}
+        className={`${spaceGrotesk.variable} ${jetbrainsMono.variable} font-sans antialiased bg-black text-white`}
         suppressHydrationWarning
       >
         <WalletProvider>

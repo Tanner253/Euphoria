@@ -92,10 +92,10 @@ export async function GET(request: NextRequest) {
       userService.getAllUsers({ limit: userLimit, sortBy: 'lastActiveAt', sortOrder: 'desc' }),
       betService.getAllBets({ limit: betLimit }),
       auditService.getLogsByTimeRange(oneDayAgo, now, { limit: 100 }),
-      transactionService.getAllTransactions({ limit: 1000, startDate: oneHourAgo, endDate: now }),
-      transactionService.getAllTransactions({ limit: 1000, startDate: oneDayAgo, endDate: now }),
-      betService.getAllBets({ limit: 1000, startDate: oneHourAgo, endDate: now }),
-      betService.getAllBets({ limit: 1000, startDate: oneDayAgo, endDate: now }),
+      transactionService.getAllTransactions({ limit: 10000, startDate: oneHourAgo, endDate: now }),
+      transactionService.getAllTransactions({ limit: 10000, startDate: oneDayAgo, endDate: now }),
+      betService.getAllBets({ limit: 10000, startDate: oneHourAgo, endDate: now }),
+      betService.getAllBets({ limit: 10000, startDate: oneDayAgo, endDate: now }),
     ]);
     
     // Calculate hourly stats

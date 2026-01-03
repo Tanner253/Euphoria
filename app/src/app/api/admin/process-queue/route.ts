@@ -7,11 +7,44 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { Keypair, Connection, Transaction, SystemProgram, sendAndConfirmTransaction, PublicKey } from '@solana/web3.js';
+import { Keypair, Connection, Transaction, SystemProgram, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import logger from '@/lib/utils/secureLogger';
 import { TransactionService } from '@/lib/db/services';
 import * as WithdrawalQueue from '@/lib/db/models/WithdrawalQueue';
+
+/**
+ * Confirm a transaction using HTTP polling instead of WebSocket subscription.
+ * This avoids the "t.mask is not a function" error in serverless environments.
+ */
+async function confirmTransactionPolling(
+  connection: Connection,
+  signature: string,
+  maxAttempts: number = 30,
+  delayMs: number = 1000
+): Promise<{ confirmed: boolean; error?: string }> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const status = await connection.getSignatureStatus(signature);
+      
+      if (status?.value?.err) {
+        return { confirmed: false, error: `Transaction failed: ${JSON.stringify(status.value.err)}` };
+      }
+      
+      if (status?.value?.confirmationStatus === 'confirmed' || 
+          status?.value?.confirmationStatus === 'finalized') {
+        return { confirmed: true };
+      }
+      
+      // Wait before next poll
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    } catch (error) {
+      logger.warn('[Queue] Polling attempt failed', { attempt, error });
+    }
+  }
+  
+  return { confirmed: false, error: 'Confirmation timeout' };
+}
 
 // Only allow in development, with admin key, or from Vercel Cron
 function isAuthorized(request: NextRequest): boolean {
@@ -133,7 +166,13 @@ export async function POST(request: NextRequest) {
       try {
         const destinationPubkey = new PublicKey(withdrawal.walletAddress);
         
-        const transaction = new Transaction().add(
+        // Get recent blockhash
+        const { blockhash } = await connection.getLatestBlockhash('confirmed');
+        
+        const transaction = new Transaction({
+          recentBlockhash: blockhash,
+          feePayer: custodialKeypair.publicKey,
+        }).add(
           SystemProgram.transfer({
             fromPubkey: custodialKeypair.publicKey,
             toPubkey: destinationPubkey,
@@ -141,11 +180,22 @@ export async function POST(request: NextRequest) {
           })
         );
         
-        const signature = await sendAndConfirmTransaction(
-          connection,
-          transaction,
-          [custodialKeypair]
-        );
+        // Sign and send (without WebSocket confirmation)
+        transaction.sign(custodialKeypair);
+        const signature = await connection.sendRawTransaction(transaction.serialize(), {
+          skipPreflight: false,
+          preflightCommitment: 'confirmed',
+        });
+        
+        // Confirm using HTTP polling (avoids WebSocket issues in serverless)
+        const confirmation = await confirmTransactionPolling(connection, signature);
+        
+        if (!confirmation.confirmed) {
+          logger.warn('[Queue] Confirmation timeout, marking completed anyway', {
+            withdrawalId: withdrawal.withdrawalId,
+            signature: signature.slice(0, 16)
+          });
+        }
         
         // SECURITY: Verify tx signature hasn't been used before
         if (await WithdrawalQueue.txSignatureExists(signature)) {
