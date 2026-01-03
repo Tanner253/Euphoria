@@ -519,10 +519,10 @@ export default function PredictionMarket() {
   useEffect(() => { betAmountRef.current = betAmount; }, [betAmount]);
 
   // Get responsive config values
-  const getCellSize = () => isMobile ? CONFIG.CELL_SIZE_MOBILE : CONFIG.CELL_SIZE;
-  const getHeadX = () => isMobile ? CONFIG.HEAD_X_MOBILE : CONFIG.HEAD_X;
-  const getPriceAxisWidth = () => isMobile ? CONFIG.PRICE_AXIS_WIDTH_MOBILE : CONFIG.PRICE_AXIS_WIDTH;
-  const getBetOptions = () => isMobile ? CONFIG.BET_AMOUNT_OPTIONS_MOBILE : CONFIG.BET_AMOUNT_OPTIONS;
+  const getCellSize = useCallback(() => isMobile ? CONFIG.CELL_SIZE_MOBILE : CONFIG.CELL_SIZE, [isMobile]);
+  const getHeadX = useCallback(() => isMobile ? CONFIG.HEAD_X_MOBILE : CONFIG.HEAD_X, [isMobile]);
+  const getPriceAxisWidth = useCallback(() => isMobile ? CONFIG.PRICE_AXIS_WIDTH_MOBILE : CONFIG.PRICE_AXIS_WIDTH, [isMobile]);
+  const getBetOptions = useCallback(() => isMobile ? CONFIG.BET_AMOUNT_OPTIONS_MOBILE : CONFIG.BET_AMOUNT_OPTIONS, [isMobile]);
 
   const generateColumn = useCallback((xPosition: number, currentPriceY: number) => {
     const state = stateRef.current;
@@ -605,7 +605,7 @@ export default function PredictionMarket() {
     state.priceHistory = [{ x: state.offsetX + getHeadX(), y: cellSize / 2 }];
     state.recentPrices = [];
     state.lastPrice = null;
-  }, [isMobile]);
+  }, [getCellSize, getHeadX]);
 
   const placeBetAt = useCallback((screenX: number, screenY: number, allowDuplicate = false) => {
     const currentBalance = balanceRef.current;
@@ -668,7 +668,7 @@ export default function PredictionMarket() {
       }
     }
     return false;
-  }, [playSound, isMobile]);
+  }, [playSound, getCellSize, getHeadX, getPriceAxisWidth]);
 
   // Main animation loop
   useEffect(() => {

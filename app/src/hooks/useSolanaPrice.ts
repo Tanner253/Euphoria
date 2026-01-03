@@ -116,7 +116,7 @@ export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
               return newPrice;
             });
           }
-        } catch (e) {
+        } catch {
           // Ignore parse errors for non-price messages
         }
       };
@@ -142,7 +142,7 @@ export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
           }, delay);
         }
       };
-    } catch (e) {
+    } catch {
       console.error('[SolanaPrice] Failed to create WebSocket:', e);
       setError('Failed to connect to price feed');
       
