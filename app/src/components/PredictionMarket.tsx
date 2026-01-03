@@ -25,7 +25,7 @@ export default function PredictionMarket() {
   // External hooks
   const { price, previousPrice, isConnected: priceConnected, priceDirection, activeProvider } = useSolanaPrice({ throttleMs: 16 });
   const { tryAutoStart: tryAutoStartMusic } = useArcadeMusic();
-  const { demoBalance, updateDemoBalance, updateGemsBalance, isDemoMode, isAuthenticated, gemsBalance, refreshBalance } = useWallet();
+  const { demoBalance, updateDemoBalance, updateGemsBalance, isDemoMode, isAuthenticated, gemsBalance } = useWallet();
   
   // UI state
   const [betAmount, setBetAmount] = useState(1);
@@ -98,7 +98,6 @@ export default function PredictionMarket() {
     onWin: handleWin,
     onTotalWonChange: setTotalWon,
     onTotalLostChange: setTotalLost,
-    onRefreshBalance: refreshBalance,
   });
 
   // Check for mobile
