@@ -31,10 +31,17 @@ export default function SplashScreen({ onConnectWallet, onSkipToDemo }: SplashSc
         
         {/* Info Cards */}
         <div className="w-full space-y-3 mb-8">
-          <div className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl">
+          <a 
+            href="https://pump.fun/coin/C2YpzZuDeqiY4NToweQLttR2Fvra2fcfEd7c2Shpump"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition-colors group"
+          >
             <span className="text-white/50 text-sm">CA</span>
-            <span className="text-purple-400 font-mono text-sm font-bold">Coming Soon</span>
-          </div>
+            <span className="text-purple-400 font-mono text-xs sm:text-sm font-bold group-hover:text-purple-300 transition-colors">
+              C2Yp...pump
+            </span>
+          </a>
           
           <div className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl">
             <span className="text-white/50 text-sm">Dev</span>
