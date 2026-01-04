@@ -245,9 +245,14 @@ export class TransactionService {
   }
 
   /**
-   * SECURITY: Calculate how many gems a user can withdraw
-   * Users can ONLY withdraw gems they've deposited - NOT initial bonus or winnings from bonus gems
-   * This prevents draining the custodial wallet
+   * Calculate how many gems a user can withdraw
+   * 
+   * UPDATED POLICY: Users CAN withdraw winnings!
+   * - Must have made at least ONE deposit (anti-fraud: proves they're a real user)
+   * - Can withdraw their FULL balance including winnings
+   * - Daily limits still apply for security
+   * 
+   * This rewards legitimate players who win fair and square 🎰
    */
   async getWithdrawableAmount(walletAddress: string): Promise<{
     withdrawable: number;
@@ -276,12 +281,15 @@ export class TransactionService {
     const totalDepositedGems = deposits[0]?.total || 0;
     const totalWithdrawnGems = withdrawals[0]?.total || 0;
     
-    // Withdrawable = deposited - already withdrawn (but can't exceed current balance)
-    const maxFromDeposits = Math.max(0, totalDepositedGems - totalWithdrawnGems);
-    const withdrawable = Math.min(maxFromDeposits, user.gemsBalance);
+    // NEW POLICY: Users can withdraw their FULL balance if they've deposited at least once
+    // This allows withdrawing legitimate winnings!
+    // Daily/single withdrawal limits still apply for security (checked in canWithdrawNow)
+    const hasDeposited = totalDepositedGems > 0;
+    const withdrawable = hasDeposited ? user.gemsBalance : 0;
     
-    // Bonus gems = current balance minus withdrawable
-    const bonusGems = user.gemsBalance - withdrawable;
+    // Bonus gems = winnings beyond deposits (for display only, not a restriction)
+    const netFromDeposits = Math.max(0, totalDepositedGems - totalWithdrawnGems);
+    const bonusGems = Math.max(0, user.gemsBalance - netFromDeposits);
     
     return {
       withdrawable,
@@ -456,29 +464,32 @@ export class TransactionService {
       return { success: false, error: rateCheck.reason };
     }
     
-    // SECURITY: Check withdrawable amount (deposited only - no bonus gems)
+    // Check withdrawable amount - users CAN withdraw winnings if they've deposited at least once
     const withdrawableInfo = await this.getWithdrawableAmount(walletAddress);
-    if (gemsAmount > withdrawableInfo.withdrawable) {
-      const bonusMsg = withdrawableInfo.bonusGems > 0 
-        ? ` (${withdrawableInfo.bonusGems} gems from bonus/winnings cannot be withdrawn)` 
-        : '';
-        
-      logger.warn('[Transaction] Withdrawal exceeds deposited amount', {
+    
+    // Must have deposited at least once (anti-fraud)
+    if (withdrawableInfo.totalDeposited === 0) {
+      logger.warn('[Transaction] Withdrawal blocked - no deposits', {
         wallet: walletAddress.slice(0, 8),
-        requested: gemsAmount,
-        withdrawable: withdrawableInfo.withdrawable,
-        bonus: withdrawableInfo.bonusGems
-      });
-      
-      await AuditService.getInstance().log({
-        walletAddress,
-        action: 'withdrawal_initiated',
-        description: `BLOCKED: Cannot withdraw ${gemsAmount} gems. Only ${withdrawableInfo.withdrawable} withdrawable.${bonusMsg}`,
       });
       
       return { 
         success: false, 
-        error: `You can only withdraw gems you've deposited. Maximum withdrawable: ${withdrawableInfo.withdrawable} gems${bonusMsg}`
+        error: 'You must make at least one deposit before withdrawing'
+      };
+    }
+    
+    // Can't withdraw more than current balance
+    if (gemsAmount > withdrawableInfo.withdrawable) {
+      logger.warn('[Transaction] Withdrawal exceeds balance', {
+        wallet: walletAddress.slice(0, 8),
+        requested: gemsAmount,
+        balance: withdrawableInfo.currentBalance
+      });
+      
+      return { 
+        success: false, 
+        error: `Insufficient balance. You have ${withdrawableInfo.currentBalance} gems available.`
       };
     }
     
