@@ -156,9 +156,13 @@ export async function POST(request: NextRequest) {
 
 async function processWithdrawal(walletAddress: string, gemsAmount: number): Promise<NextResponse> {
   try {
-    // SECURITY: Check for existing pending withdrawal
-    const hasPending = await WithdrawalQueue.hasPendingWithdrawal(walletAddress);
-    if (hasPending) {
+    // SECURITY: Check for existing pending withdrawal in BOTH collections
+    // This prevents race conditions where one collection has pending but not the other
+    const hasPendingInQueue = await WithdrawalQueue.hasPendingWithdrawal(walletAddress);
+    if (hasPendingInQueue) {
+      logger.info('[Withdrawal] Blocked - pending in queue', {
+        wallet: walletAddress.slice(0, 8)
+      });
       return NextResponse.json(
         { error: 'You already have a pending withdrawal' },
         { status: 400 }
@@ -166,6 +170,7 @@ async function processWithdrawal(walletAddress: string, gemsAmount: number): Pro
     }
     
     // Create withdrawal request using TransactionService (includes all security checks)
+    // This also checks for pending withdrawals in transactions collection
     const transactionService = TransactionService.getInstance();
     const result = await transactionService.createWithdrawal(
       walletAddress,

@@ -356,27 +356,35 @@ export async function POST(request: NextRequest) {
     
     switch (action) {
       case 'cleanup_pending_deposits': {
-        // Find and delete pending deposits without txSignature (orphaned)
-        // Check for both missing field and null value
-        const result = await transactionsCollection.deleteMany({
-          type: 'deposit',
-          status: 'pending',
-          $or: [
-            { txSignature: { $exists: false } },
-            { txSignature: null }
-          ]
-        });
+        // Mark orphaned pending deposits as cancelled (keeps audit trail)
+        const result = await transactionsCollection.updateMany(
+          {
+            type: 'deposit',
+            status: 'pending',
+            $or: [
+              { txSignature: { $exists: false } },
+              { txSignature: null }
+            ]
+          },
+          {
+            $set: {
+              status: 'cancelled',
+              notes: 'Admin cancelled: orphaned deposit (no tx signature)',
+              cancelledAt: new Date()
+            }
+          }
+        );
         
         await auditService.log({
           action: 'admin_action',
-          description: `Deleted ${result.deletedCount} orphaned pending deposits`,
+          description: `Cancelled ${result.modifiedCount} orphaned pending deposits`,
         });
         
         return NextResponse.json({
           success: true,
           action: 'cleanup_pending_deposits',
-          deletedCount: result.deletedCount,
-          message: `Deleted ${result.deletedCount} orphaned pending deposits`
+          cancelledCount: result.modifiedCount,
+          message: `Cancelled ${result.modifiedCount} orphaned pending deposits`
         });
       }
       
@@ -441,17 +449,26 @@ export async function POST(request: NextRequest) {
       }
       
       case 'cleanup_all_pending': {
-        // Clean up both deposits and withdrawals
+        // Clean up both deposits and withdrawals (mark as cancelled, don't delete)
         
-        // 1. Delete orphaned pending deposits (no txSignature)
-        const depositResult = await transactionsCollection.deleteMany({
-          type: 'deposit',
-          status: 'pending',
-          $or: [
-            { txSignature: { $exists: false } },
-            { txSignature: null }
-          ]
-        });
+        // 1. Cancel orphaned pending deposits (no txSignature)
+        const depositResult = await transactionsCollection.updateMany(
+          {
+            type: 'deposit',
+            status: 'pending',
+            $or: [
+              { txSignature: { $exists: false } },
+              { txSignature: null }
+            ]
+          },
+          {
+            $set: {
+              status: 'cancelled',
+              notes: 'Admin cleanup: orphaned deposit (no tx signature)',
+              cancelledAt: new Date()
+            }
+          }
+        );
         
         // 2. Cancel and refund orphaned pending withdrawals (no txSignature)
         const pendingWithdrawals = await transactionsCollection.find({
@@ -487,47 +504,201 @@ export async function POST(request: NextRequest) {
           {
             $set: {
               status: 'cancelled',
-              notes: 'Admin cleanup: orphaned withdrawal'
+              notes: 'Admin cleanup: orphaned withdrawal',
+              cancelledAt: new Date()
             }
           }
         );
         
         await auditService.log({
           action: 'admin_action',
-          description: `Cleanup: Deleted ${depositResult.deletedCount} orphaned deposits, cancelled ${withdrawalResult.modifiedCount} withdrawals, refunded ${refundedGems} gems`,
+          description: `Cleanup: Cancelled ${depositResult.modifiedCount} orphaned deposits, cancelled ${withdrawalResult.modifiedCount} withdrawals, refunded ${refundedGems} gems`,
         });
         
         return NextResponse.json({
           success: true,
           action: 'cleanup_all_pending',
           deposits: {
-            deletedCount: depositResult.deletedCount
+            cancelledCount: depositResult.modifiedCount
           },
           withdrawals: {
             cancelledCount: withdrawalResult.modifiedCount,
             refundedGems
           },
-          message: `Deleted ${depositResult.deletedCount} orphaned deposits, cancelled ${withdrawalResult.modifiedCount} withdrawals, refunded ${refundedGems} gems`
+          message: `Cancelled ${depositResult.modifiedCount} orphaned deposits, cancelled ${withdrawalResult.modifiedCount} withdrawals, refunded ${refundedGems} gems`
         });
       }
       
       case 'delete_all_pending_deposits': {
-        // AGGRESSIVE: Delete ALL pending deposits (for recovery from attacks)
-        const result = await transactionsCollection.deleteMany({
-          type: 'deposit',
-          status: 'pending'
-        });
+        // Mark ALL pending deposits as cancelled (keeps audit trail)
+        const result = await transactionsCollection.updateMany(
+          {
+            type: 'deposit',
+            status: 'pending'
+          },
+          {
+            $set: {
+              status: 'cancelled',
+              notes: 'Admin cancelled: pending deposit cleanup',
+              cancelledAt: new Date()
+            }
+          }
+        );
         
         await auditService.log({
           action: 'admin_action',
-          description: `AGGRESSIVE: Deleted ALL ${result.deletedCount} pending deposits`,
+          description: `Cancelled ALL ${result.modifiedCount} pending deposits`,
         });
         
         return NextResponse.json({
           success: true,
-          action: 'delete_all_pending_deposits',
-          deletedCount: result.deletedCount,
-          message: `Deleted ALL ${result.deletedCount} pending deposits`
+          action: 'cancel_all_pending_deposits',
+          cancelledCount: result.modifiedCount,
+          message: `Cancelled ${result.modifiedCount} pending deposits`
+        });
+      }
+      
+      case 'update_user_status': {
+        // Update a user's status (active, suspended, banned)
+        const { walletAddress, status } = body;
+        
+        if (!walletAddress || !status) {
+          return NextResponse.json(
+            { error: 'Missing walletAddress or status' },
+            { status: 400 }
+          );
+        }
+        
+        if (!['active', 'suspended', 'banned'].includes(status)) {
+          return NextResponse.json(
+            { error: 'Invalid status. Must be: active, suspended, or banned' },
+            { status: 400 }
+          );
+        }
+        
+        const usersCollection = db.collection('users');
+        const result = await usersCollection.updateOne(
+          { walletAddress },
+          { $set: { status, updatedAt: new Date() } }
+        );
+        
+        if (result.matchedCount === 0) {
+          return NextResponse.json(
+            { error: 'User not found' },
+            { status: 404 }
+          );
+        }
+        
+        const auditAction = status === 'banned' ? 'user_banned' : status === 'suspended' ? 'user_suspended' : 'admin_action';
+        await auditService.log({
+          walletAddress,
+          action: auditAction,
+          description: `User status changed to: ${status}`,
+        });
+        
+        return NextResponse.json({
+          success: true,
+          action: 'update_user_status',
+          walletAddress: walletAddress.slice(0, 8) + '...',
+          newStatus: status,
+          message: `User status updated to ${status}`
+        });
+      }
+      
+      case 'process_queue': {
+        try {
+          // First clean up any stale locks
+          const { cleanupStaleLocks, getPendingQueue } = await import('@/lib/db/models/WithdrawalQueue');
+          await cleanupStaleLocks();
+          
+          const pendingQueue = await getPendingQueue(10);
+          
+          return NextResponse.json({
+            success: true,
+            action: 'process_queue',
+            pendingCount: pendingQueue.length,
+            message: `Queue has ${pendingQueue.length} pending withdrawals. Use /api/admin/process-queue endpoint for actual processing.`
+          });
+        } catch (err) {
+          return NextResponse.json({
+            success: false,
+            action: 'process_queue',
+            error: String(err),
+            message: 'Failed to check withdrawal queue'
+          });
+        }
+      }
+      
+      case 'cancel_all_pending_withdrawals': {
+        // Cancel ALL pending withdrawals and refund gems
+        // Step 1: Get all pending withdrawals from transactions collection
+        const pendingWithdrawals = await transactionsCollection.find({
+          type: 'withdrawal',
+          status: 'pending'
+        }).toArray();
+        
+        let refundedGems = 0;
+        const refundDetails: Array<{wallet: string; gems: number}> = [];
+        
+        // Step 2: Refund gems for each withdrawal
+        const userSvc = UserService.getInstance();
+        for (const withdrawal of pendingWithdrawals) {
+          const refundAmount = withdrawal.gemsAmount;
+          await userSvc.updateBalance(
+            withdrawal.walletAddress,
+            refundAmount,
+            `Refund from cancelled pending withdrawal`
+          );
+          refundedGems += refundAmount;
+          refundDetails.push({ 
+            wallet: withdrawal.walletAddress.slice(0, 8), 
+            gems: refundAmount 
+          });
+        }
+        
+        // Step 3: Mark all pending withdrawals as CANCELLED (keeps audit trail)
+        const txResult = await transactionsCollection.updateMany(
+          {
+            type: 'withdrawal',
+            status: 'pending'
+          },
+          {
+            $set: {
+              status: 'cancelled',
+              notes: 'Admin cancelled: pending withdrawal cleanup with refund',
+              cancelledAt: new Date()
+            }
+          }
+        );
+        
+        // Step 4: Also cancel all pending/processing in withdrawal_queue
+        const queueResult = await db.collection('withdrawal_queue').updateMany(
+          { status: { $in: ['pending', 'processing'] } },
+          { 
+            $set: { 
+              status: 'cancelled',
+              queuePosition: null,
+              processingLock: null,
+              processingLockExpiry: null,
+              failureReason: 'Admin cancelled'
+            } 
+          }
+        );
+        
+        await auditService.log({
+          action: 'admin_action',
+          description: `CLEANUP: Cancelled ${txResult.modifiedCount} pending withdrawals, refunded ${refundedGems} gems, cancelled ${queueResult.modifiedCount} queue items`,
+          newValue: { refundDetails }
+        });
+        
+        return NextResponse.json({
+          success: true,
+          action: 'cancel_all_pending_withdrawals',
+          cancelledTransactions: txResult.modifiedCount,
+          cancelledQueueItems: queueResult.modifiedCount,
+          refundedGems,
+          refundDetails,
+          message: `Cancelled ${txResult.modifiedCount} pending withdrawals, refunded ${refundedGems} gems`
         });
       }
       

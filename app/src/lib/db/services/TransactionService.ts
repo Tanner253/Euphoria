@@ -44,25 +44,40 @@ export class TransactionService {
     
     // Ensure indexes once per instance lifetime
     if (!this.indexesEnsured) {
-      // Unique index on txSignature (sparse - only indexed when field exists)
-      await collection.createIndex(
-        { txSignature: 1 }, 
-        { unique: true, sparse: true }
-      ).catch(() => {}); // Index may already exist
-      
-      // SECURITY: Partial unique index - only ONE pending withdrawal per wallet
-      // This prevents race conditions at the database level
-      await collection.createIndex(
-        { walletAddress: 1, type: 1 },
-        { 
-          unique: true, 
-          partialFilterExpression: { 
-            type: 'withdrawal', 
-            status: 'pending' 
-          },
-          name: 'unique_pending_withdrawal_per_wallet'
+      try {
+        // Unique index on txSignature (sparse - only indexed when field exists)
+        await collection.createIndex(
+          { txSignature: 1 }, 
+          { unique: true, sparse: true }
+        );
+        
+        // SECURITY: Partial unique index - only ONE pending withdrawal per wallet
+        // This prevents race conditions at the database level
+        await collection.createIndex(
+          { walletAddress: 1, type: 1, status: 1 },
+          { 
+            unique: true, 
+            partialFilterExpression: { 
+              type: 'withdrawal', 
+              status: 'pending' 
+            },
+            name: 'unique_pending_withdrawal_per_wallet'
+          }
+        );
+        
+        // Index for faster pending withdrawal lookups
+        await collection.createIndex(
+          { walletAddress: 1, type: 1, status: 1 }
+        );
+        
+        logger.info('[TransactionService] Indexes ensured');
+      } catch (err) {
+        // Index may already exist - this is fine
+        const mongoError = err as { code?: number };
+        if (mongoError.code !== 85 && mongoError.code !== 86) { // IndexOptionsConflict or IndexKeySpecsConflict
+          logger.warn('[TransactionService] Index creation warning', { error: String(err) });
         }
-      ).catch(() => {}); // Index may already exist
+      }
       
       this.indexesEnsured = true;
     }
@@ -471,6 +486,24 @@ export class TransactionService {
     
     const collection = await this.getCollection();
     
+    // SECURITY: First check if there's already a pending withdrawal in transactions collection
+    const existingPending = await collection.findOne({
+      walletAddress,
+      type: 'withdrawal',
+      status: 'pending'
+    });
+    
+    if (existingPending) {
+      logger.warn('[Transaction] Duplicate withdrawal blocked (pre-check)', {
+        wallet: walletAddress.slice(0, 8),
+        existingId: existingPending._id?.toString()
+      });
+      return { 
+        success: false, 
+        error: 'You already have a pending withdrawal. Please wait for it to complete.' 
+      };
+    }
+    
     const transaction: Transaction = {
       walletAddress,
       type: 'withdrawal',
@@ -483,6 +516,7 @@ export class TransactionService {
     };
     
     // SECURITY: Try to insert - will fail if duplicate due to unique partial index
+    // This is the final safety net if race condition bypasses the check above
     try {
       const result = await collection.insertOne(transaction);
       transaction._id = result.insertedId;

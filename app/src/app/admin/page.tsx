@@ -95,11 +95,45 @@ export default function AdminPage() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string>('');
   const [isMounted, setIsMounted] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionResult, setActionResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [userActionModal, setUserActionModal] = useState<{ wallet: string; action: 'ban' | 'suspend' | 'activate' } | null>(null);
   
   // Prevent hydration mismatch by only rendering dynamic content after mount
   useEffect(() => {
     setIsMounted(true);
   }, []);
+
+  // Admin action handler
+  const executeAction = async (action: string, payload?: Record<string, unknown>) => {
+    setActionLoading(action);
+    setActionResult(null);
+    try {
+      const response = await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...payload }),
+      });
+      const result = await response.json();
+      if (result.success) {
+        setActionResult({ success: true, message: result.message || 'Action completed successfully' });
+        // Refresh data after action
+        fetchData();
+      } else {
+        setActionResult({ success: false, message: result.error || 'Action failed' });
+      }
+    } catch (err) {
+      setActionResult({ success: false, message: `Error: ${err}` });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // User status change handler
+  const changeUserStatus = async (walletAddress: string, newStatus: 'active' | 'suspended' | 'banned') => {
+    await executeAction('update_user_status', { walletAddress, status: newStatus });
+    setUserActionModal(null);
+  };
 
   const fetchData = useCallback(async () => {
     try {
@@ -277,6 +311,91 @@ export default function AdminPage() {
           </div>
         </section>
       )}
+
+      {/* Admin Actions Panel */}
+      <section className="mb-6">
+        <h2 className="text-lg font-semibold mb-3 text-orange-400 flex items-center gap-2">
+          ⚡ Admin Actions
+        </h2>
+        
+        {/* Action Result Toast */}
+        {actionResult && (
+          <div className={`mb-4 px-4 py-3 rounded-lg border ${
+            actionResult.success 
+              ? 'bg-green-500/10 border-green-500/30 text-green-400' 
+              : 'bg-red-500/10 border-red-500/30 text-red-400'
+          }`}>
+            <div className="flex items-center justify-between">
+              <span>{actionResult.success ? '✅' : '❌'} {actionResult.message}</span>
+              <button onClick={() => setActionResult(null)} className="text-zinc-500 hover:text-zinc-300">×</button>
+            </div>
+          </div>
+        )}
+        
+        <div className="bg-zinc-900/50 rounded-xl border border-zinc-800 p-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Cancel Pending Withdrawals */}
+            <div className="bg-zinc-800/50 rounded-lg p-4 border border-zinc-700">
+              <h3 className="text-sm font-semibold text-yellow-400 mb-2">🔄 Pending Withdrawals</h3>
+              <p className="text-xs text-zinc-500 mb-3">
+                Cancel all pending withdrawals and refund gems to users.
+              </p>
+              <button
+                onClick={() => executeAction('cancel_all_pending_withdrawals')}
+                disabled={actionLoading === 'cancel_all_pending_withdrawals'}
+                className="w-full px-3 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
+              >
+                {actionLoading === 'cancel_all_pending_withdrawals' ? 'Processing...' : 'Cancel & Refund All'}
+              </button>
+            </div>
+            
+            {/* Cancel Pending Deposits */}
+            <div className="bg-zinc-800/50 rounded-lg p-4 border border-zinc-700">
+              <h3 className="text-sm font-semibold text-orange-400 mb-2">📥 Pending Deposits</h3>
+              <p className="text-xs text-zinc-500 mb-3">
+                Cancel all pending deposits (marks as cancelled, keeps audit trail).
+              </p>
+              <button
+                onClick={() => executeAction('delete_all_pending_deposits')}
+                disabled={actionLoading === 'delete_all_pending_deposits'}
+                className="w-full px-3 py-2 bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
+              >
+                {actionLoading === 'delete_all_pending_deposits' ? 'Processing...' : 'Cancel All Pending'}
+              </button>
+            </div>
+            
+            {/* Cleanup All */}
+            <div className="bg-zinc-800/50 rounded-lg p-4 border border-zinc-700">
+              <h3 className="text-sm font-semibold text-red-400 mb-2">🧹 Full Cleanup</h3>
+              <p className="text-xs text-zinc-500 mb-3">
+                Cancel all pending transactions (both deposits and withdrawals).
+              </p>
+              <button
+                onClick={() => executeAction('cleanup_all_pending')}
+                disabled={actionLoading === 'cleanup_all_pending'}
+                className="w-full px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
+              >
+                {actionLoading === 'cleanup_all_pending' ? 'Processing...' : 'Cleanup Everything'}
+              </button>
+            </div>
+            
+            {/* Process Withdrawal Queue */}
+            <div className="bg-zinc-800/50 rounded-lg p-4 border border-zinc-700">
+              <h3 className="text-sm font-semibold text-green-400 mb-2">💸 Process Queue</h3>
+              <p className="text-xs text-zinc-500 mb-3">
+                Manually trigger withdrawal queue processing.
+              </p>
+              <button
+                onClick={() => executeAction('process_queue')}
+                disabled={actionLoading === 'process_queue'}
+                className="w-full px-3 py-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
+              >
+                {actionLoading === 'process_queue' ? 'Processing...' : 'Process Withdrawals'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* House Profit Banner */}
       <section className="mb-6">
@@ -565,11 +684,14 @@ export default function AdminPage() {
                   <th className="px-3 py-2 text-right text-zinc-400">Net P/L</th>
                   <th className="px-3 py-2 text-center text-zinc-400">Status</th>
                   <th className="px-3 py-2 text-right text-zinc-400">Last Active</th>
+                  <th className="px-3 py-2 text-center text-zinc-400">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800">
                 {data?.users?.map((user) => (
-                  <tr key={user.id} className="hover:bg-zinc-800/30">
+                  <tr key={user.id} className={`hover:bg-zinc-800/30 ${
+                    user.status === 'banned' ? 'bg-red-500/5' : user.status === 'suspended' ? 'bg-orange-500/5' : ''
+                  }`}>
                     <td className="px-3 py-2 text-zinc-300 font-mono">{truncateAddress(user.walletAddress)}</td>
                     <td className="px-3 py-2 text-right font-mono text-purple-400">{formatGems(user.gemsBalance)}</td>
                     <td className="px-3 py-2 text-right font-mono text-green-400">{formatSol(user.totalDeposited)}</td>
@@ -583,16 +705,117 @@ export default function AdminPage() {
                     </td>
                     <td className="px-3 py-2 text-center"><StatusBadge status={user.status} /></td>
                     <td className="px-3 py-2 text-right text-zinc-500">{isMounted ? new Date(user.lastActiveAt).toLocaleDateString() : '...'}</td>
+                    <td className="px-3 py-2 text-center">
+                      <div className="flex gap-1 justify-center">
+                        {user.status === 'active' && (
+                          <>
+                            <button
+                              onClick={() => setUserActionModal({ wallet: user.walletAddress, action: 'suspend' })}
+                              className="px-2 py-1 text-[10px] bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 rounded transition-colors"
+                              title="Suspend user"
+                            >
+                              ⏸️
+                            </button>
+                            <button
+                              onClick={() => setUserActionModal({ wallet: user.walletAddress, action: 'ban' })}
+                              className="px-2 py-1 text-[10px] bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded transition-colors"
+                              title="Ban user"
+                            >
+                              🚫
+                            </button>
+                          </>
+                        )}
+                        {user.status === 'suspended' && (
+                          <>
+                            <button
+                              onClick={() => changeUserStatus(user.walletAddress, 'active')}
+                              className="px-2 py-1 text-[10px] bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded transition-colors"
+                              title="Reactivate user"
+                            >
+                              ✅
+                            </button>
+                            <button
+                              onClick={() => setUserActionModal({ wallet: user.walletAddress, action: 'ban' })}
+                              className="px-2 py-1 text-[10px] bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded transition-colors"
+                              title="Ban user"
+                            >
+                              🚫
+                            </button>
+                          </>
+                        )}
+                        {user.status === 'banned' && (
+                          <button
+                            onClick={() => changeUserStatus(user.walletAddress, 'active')}
+                            className="px-2 py-1 text-[10px] bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded transition-colors"
+                            title="Unban user"
+                          >
+                            ✅
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
                 {(!data?.users || data.users.length === 0) && (
-                  <tr><td colSpan={9} className="px-3 py-4 text-center text-zinc-500">No users</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-4 text-center text-zinc-500">No users</td></tr>
                 )}
               </tbody>
             </table>
           </div>
         </div>
       </section>
+
+      {/* User Action Confirmation Modal */}
+      {userActionModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-zinc-900 rounded-xl border border-zinc-700 p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-white mb-2">
+              {userActionModal.action === 'ban' ? '🚫 Ban User' : 
+               userActionModal.action === 'suspend' ? '⏸️ Suspend User' : '✅ Activate User'}
+            </h3>
+            <p className="text-zinc-400 text-sm mb-4">
+              Are you sure you want to {userActionModal.action} this user?
+            </p>
+            <p className="text-zinc-300 font-mono text-sm bg-zinc-800 px-3 py-2 rounded mb-4">
+              {userActionModal.wallet}
+            </p>
+            {userActionModal.action === 'ban' && (
+              <p className="text-red-400 text-xs mb-4">
+                ⚠️ Banned users cannot login, place bets, or withdraw. This action can be reversed.
+              </p>
+            )}
+            {userActionModal.action === 'suspend' && (
+              <p className="text-orange-400 text-xs mb-4">
+                ⚠️ Suspended users can login but cannot place bets or withdraw.
+              </p>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={() => setUserActionModal(null)}
+                className="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => changeUserStatus(
+                  userActionModal.wallet, 
+                  userActionModal.action === 'ban' ? 'banned' : 
+                  userActionModal.action === 'suspend' ? 'suspended' : 'active'
+                )}
+                className={`flex-1 px-4 py-2 rounded-lg transition-colors ${
+                  userActionModal.action === 'ban' 
+                    ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400' 
+                    : userActionModal.action === 'suspend'
+                    ? 'bg-orange-500/20 hover:bg-orange-500/30 text-orange-400'
+                    : 'bg-green-500/20 hover:bg-green-500/30 text-green-400'
+                }`}
+              >
+                Confirm {userActionModal.action === 'ban' ? 'Ban' : userActionModal.action === 'suspend' ? 'Suspend' : 'Activate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="text-center text-zinc-600 text-xs py-4 border-t border-zinc-800">
