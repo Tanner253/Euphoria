@@ -368,7 +368,7 @@ export async function POST(request: NextRequest) {
         });
         
         await auditService.log({
-          action: 'admin_cleanup',
+          action: 'admin_action',
           description: `Deleted ${result.deletedCount} orphaned pending deposits`,
         });
         
@@ -426,7 +426,7 @@ export async function POST(request: NextRequest) {
         );
         
         await auditService.log({
-          action: 'admin_cleanup',
+          action: 'admin_action',
           description: `Cancelled ${result.modifiedCount} orphaned pending withdrawals, refunded ${refundedGems} gems`,
         });
         
@@ -493,7 +493,7 @@ export async function POST(request: NextRequest) {
         );
         
         await auditService.log({
-          action: 'admin_cleanup',
+          action: 'admin_action',
           description: `Cleanup: Deleted ${depositResult.deletedCount} orphaned deposits, cancelled ${withdrawalResult.modifiedCount} withdrawals, refunded ${refundedGems} gems`,
         });
         
@@ -519,7 +519,7 @@ export async function POST(request: NextRequest) {
         });
         
         await auditService.log({
-          action: 'admin_cleanup',
+          action: 'admin_action',
           description: `AGGRESSIVE: Deleted ALL ${result.deletedCount} pending deposits`,
         });
         

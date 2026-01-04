@@ -176,7 +176,7 @@ export class BetService {
     // ONE audit log for entire batch
     await AuditService.getInstance().log({
       walletAddress,
-      action: 'bet_batch_placed',
+      action: 'bet_placed',
       description: `Batch: ${bets.length} bets, ${totalAmount} gems total`,
       newValue: {
         count: bets.length,

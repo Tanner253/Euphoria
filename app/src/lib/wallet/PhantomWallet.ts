@@ -399,7 +399,7 @@ class PhantomWallet {
           };
         }
         console.log('✅ Transaction confirmed!');
-      } catch (confirmError) {
+      } catch {
         // If confirmation times out, still return the signature
         // The server will verify it
         console.warn('⚠️ Confirmation wait timed out, but transaction may still succeed');
