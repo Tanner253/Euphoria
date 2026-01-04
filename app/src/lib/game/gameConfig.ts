@@ -57,10 +57,10 @@ export const GAME_CONFIG = {
 /**
  * Calculate multiplier based on distance from current price and risk level
  * 
- * Risk level starting multipliers:
- * - Low Risk (2.0x zoom): starts at 1.6x
- * - Medium (1.0x zoom): starts at 2.1x  
- * - High Risk (0.75x zoom): starts at 3.1x
+ * Risk level starting multipliers (for bets on the price line):
+ * - Low Risk (2.0x zoom): starts at 1.15x
+ * - Medium (1.0x zoom): starts at 1.50x  
+ * - High Risk (0.75x zoom): starts at 2.00x
  * 
  * Higher distance from price = higher multiplier
  */
@@ -72,17 +72,17 @@ export function calculateMultiplier(yIndex: number, currentPriceIndex: number, z
   let minMultiplier: number;
   
   if (zoomLevel >= 1.5) {
-    // Low Risk - easier wins, lower payouts (starts at 1.6x)
-    baseMultiplier = 0.80;
-    minMultiplier = 1.60;
+    // Low Risk - easier wins, lower payouts (starts at 1.15x)
+    baseMultiplier = 0.58;
+    minMultiplier = 1.15;
   } else if (zoomLevel >= 0.9) {
-    // Medium Risk - balanced (starts at 2.1x)
-    baseMultiplier = 1.05;
-    minMultiplier = 2.10;
+    // Medium Risk - balanced (starts at 1.5x)
+    baseMultiplier = 0.75;
+    minMultiplier = 1.50;
   } else {
-    // High Risk - harder wins, higher payouts (starts at 3.1x)
-    baseMultiplier = 1.55;
-    minMultiplier = 3.10;
+    // High Risk - harder wins, higher payouts (starts at 2.0x)
+    baseMultiplier = 1.00;
+    minMultiplier = 2.00;
   }
   
   // Formula: (base + (dist^1.25) * 0.28) * 2

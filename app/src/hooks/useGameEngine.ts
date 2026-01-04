@@ -213,7 +213,7 @@ export function useGameEngine({
       const yIndex = currentPriceIndex + i;
       cells[yIndex] = {
         id: Math.random().toString(36).substr(2, 9),
-        multiplier: calculateMultiplier(yIndex, currentPriceIndex),
+        multiplier: calculateMultiplier(yIndex, currentPriceIndex, zoomLevel),
       };
     }
 
@@ -320,7 +320,7 @@ export function useGameEngine({
         // Note: priceY is the Y coordinate of the price line, cellSize is the cell height
         // To find which cell index the price is in: floor(priceY / cellSize)
         const currentPriceYIndex = Math.floor(stateRef.current.priceY / cellSize);
-        const dynamicMultiplier = calculateMultiplier(yIndex, currentPriceYIndex);
+        const dynamicMultiplier = calculateMultiplier(yIndex, currentPriceYIndex, zoomLevel);
         const multiplier = parseFloat(dynamicMultiplier);
         const localBetId = Math.random().toString(36).substr(2, 9);
         
@@ -877,8 +877,8 @@ export function useGameEngine({
           ctx.arc(screenX, y, 1.5, 0, Math.PI * 2);
           ctx.fill();
 
-          // DYNAMIC: Calculate multiplier based on current price position, not stored value
-          const dynamicMultiplier = calculateMultiplier(yIndex, currentPriceYIndex);
+          // DYNAMIC: Calculate multiplier based on current price position and zoom/risk level
+          const dynamicMultiplier = calculateMultiplier(yIndex, currentPriceYIndex, zoomLevel);
           const mult = parseFloat(dynamicMultiplier);
           const intensity = Math.min((mult - 1) / 5, 1);
           const alpha = isBettable ? (0.15 + intensity * 0.35) : 0.08;
