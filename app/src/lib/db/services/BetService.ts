@@ -100,6 +100,99 @@ export class BetService {
   }
 
   /**
+   * OPTIMIZED: Place multiple bets in a single batch operation
+   * Reduces database operations from 4*N to ~4 total
+   */
+  async placeBetBatch(
+    walletAddress: string,
+    sessionId: string,
+    priceAtBet: number,
+    bets: Array<{
+      columnId: string;
+      yIndex: number;
+      basePrice: number;
+      cellSize: number;
+      amount: number;
+      multiplier: number;
+      winPriceMin: number;
+      winPriceMax: number;
+    }>
+  ): Promise<{ 
+    success: boolean; 
+    results: Array<{ index: number; success: boolean; betId?: string; error?: string }>;
+    totalDeducted: number;
+    error?: string;
+  }> {
+    if (bets.length === 0) {
+      return { success: false, results: [], totalDeducted: 0, error: 'No bets provided' };
+    }
+
+    // Calculate total amount needed
+    const totalAmount = bets.reduce((sum, bet) => sum + bet.amount, 0);
+
+    // ONE balance deduction for all bets
+    const balanceResult = await UserService.getInstance().updateBalance(
+      walletAddress,
+      -totalAmount,
+      `Batch bet: ${bets.length} bets totaling ${totalAmount} gems`
+    );
+
+    if (!balanceResult.success) {
+      return { success: false, results: [], totalDeducted: 0, error: 'Insufficient balance' };
+    }
+
+    // Prepare all bet documents
+    const collection = await this.getCollection();
+    const now = new Date();
+    const betDocs: Bet[] = bets.map(bet => ({
+      walletAddress,
+      sessionId,
+      amount: bet.amount,
+      multiplier: bet.multiplier,
+      potentialWin: bet.amount * bet.multiplier,
+      columnId: bet.columnId,
+      yIndex: bet.yIndex,
+      basePrice: bet.basePrice,
+      cellSize: bet.cellSize,
+      priceAtBet,
+      winPriceMin: bet.winPriceMin,
+      winPriceMax: bet.winPriceMax,
+      status: 'pending' as const,
+      createdAt: now,
+    }));
+
+    // ONE insertMany for all bets
+    const insertResult = await collection.insertMany(betDocs);
+
+    // Build results with inserted IDs
+    const results = bets.map((bet, index) => ({
+      index,
+      success: true,
+      betId: insertResult.insertedIds[index]?.toString(),
+      winPriceMin: bet.winPriceMin,
+      winPriceMax: bet.winPriceMax,
+    }));
+
+    // ONE audit log for entire batch
+    await AuditService.getInstance().log({
+      walletAddress,
+      action: 'bet_batch_placed',
+      description: `Batch: ${bets.length} bets, ${totalAmount} gems total`,
+      newValue: {
+        count: bets.length,
+        totalAmount,
+        bets: bets.map((b, i) => ({ 
+          id: results[i].betId,
+          amount: b.amount,
+          multiplier: b.multiplier 
+        }))
+      },
+    });
+
+    return { success: true, results, totalDeducted: totalAmount };
+  }
+
+  /**
    * Resolve a bet (win or lose)
    */
   async resolveBet(

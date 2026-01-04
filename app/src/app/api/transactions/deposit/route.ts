@@ -18,7 +18,8 @@ import logger from '@/lib/utils/secureLogger';
 async function verifyDepositOnChain(
   txSignature: string,
   fromWallet: string,
-  custodialAddress: string
+  custodialAddress: string,
+  maxRetries: number = 5
 ): Promise<{ 
   valid: boolean; 
   lamports?: number; 
@@ -30,14 +31,29 @@ async function verifyDepositOnChain(
     const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
     const connection = new Connection(rpcUrl, 'confirmed');
     
-    // Get transaction details
-    const tx = await connection.getParsedTransaction(txSignature, {
-      maxSupportedTransactionVersion: 0,
-      commitment: 'confirmed'
-    });
+    // Retry logic for transaction lookup (handles race conditions)
+    let tx = null;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      tx = await connection.getParsedTransaction(txSignature, {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed'
+      });
+      
+      if (tx) break;
+      
+      // Wait before retrying (exponential backoff: 1s, 2s, 3s, 4s, 5s)
+      if (attempt < maxRetries - 1) {
+        logger.info('[Deposit] Transaction not found, retrying...', {
+          attempt: attempt + 1,
+          maxRetries,
+          sig: txSignature.slice(0, 16)
+        });
+        await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 1000));
+      }
+    }
     
     if (!tx) {
-      return { valid: false, error: 'Transaction not found on chain' };
+      return { valid: false, error: 'Transaction not found on chain after retries' };
     }
     
     if (tx.meta?.err) {

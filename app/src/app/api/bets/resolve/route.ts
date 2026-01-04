@@ -17,10 +17,12 @@ import logger from '@/lib/utils/secureLogger';
 
 interface ResolveBetRequest {
   betId: string;
-  // Client sends the price at the moment the column crossed the head
-  priceAtCrossing?: number;
-  // Client can send hints for logging only
-  clientHint?: boolean;
+  // Client-observed price range during column crossing
+  // Used for "touch" win detection - line touching cell at ANY point = win
+  priceAtCrossing?: number;      // Center price (legacy support)
+  priceRangeMin?: number;        // Lowest price line reached in column
+  priceRangeMax?: number;        // Highest price line reached in column
+  clientHint?: boolean;          // Client's win determination (for debugging)
 }
 
 export async function POST(request: NextRequest) {
@@ -38,7 +40,7 @@ export async function POST(request: NextRequest) {
     
     // 2. Parse request
     const body: ResolveBetRequest = await request.json();
-    const { betId, clientHint, priceAtCrossing } = body;
+    const { betId, clientHint, priceAtCrossing, priceRangeMin, priceRangeMax } = body;
     
     if (!betId) {
       return NextResponse.json(
@@ -85,59 +87,84 @@ export async function POST(request: NextRequest) {
       });
     }
     
-    // 4. Determine which price to use for win calculation
-    // Client sends the price at the exact moment the column crossed the head
-    // We validate this price is reasonable (within tolerance of server price)
-    // OPTIMIZATION: Only fetch server price if we need to validate or fallback
-    const MAX_PRICE_DRIFT = 1.00; // Allow up to $1.00 drift for network latency
-    let resolutionPrice: number;
+    // 4. TOUCH-BASED WIN DETECTION
+    // The client sends the price RANGE the line traveled through the column
+    // Win if the price range OVERLAPS with the bet's win range at ANY point
+    // This is more intuitive - if the line "touched" the cell, you win!
     
-    if (priceAtCrossing !== undefined && typeof priceAtCrossing === 'number' && priceAtCrossing > 0) {
-      // Client provided crossing price - validate it's reasonable
-      // Use bet's priceAtBet as reference (faster than fetching server price)
-      const referenceDrift = Math.abs(priceAtCrossing - bet.priceAtBet);
+    const priceData = await getServerPrice();
+    const serverPrice = priceData.price;
+    
+    // SECURITY: Validate client price range is reasonable
+    // Max range width of $2 prevents fabricated wide ranges
+    // Max drift of $0.50 from server price prevents stale/manipulated data
+    const MAX_RANGE_WIDTH = 2.0;   // Max $2 swing within one column (very volatile)
+    const MAX_CENTER_DRIFT = 0.50; // Center price must be within $0.50 of server
+    
+    let clientPriceMin: number | undefined;
+    let clientPriceMax: number | undefined;
+    let resolutionPrice = serverPrice; // For logging/storage
+    
+    // Validate and accept client price range
+    if (priceRangeMin !== undefined && priceRangeMax !== undefined && 
+        typeof priceRangeMin === 'number' && typeof priceRangeMax === 'number' &&
+        priceRangeMin > 0 && priceRangeMax > 0) {
       
-      // Price shouldn't drift more than $5 from bet placement (reasonable for short-term bets)
-      if (referenceDrift <= 5.0) {
-        resolutionPrice = priceAtCrossing;
-        logger.info('[Bet] Using client crossing price', {
-          priceAtCrossing,
-          priceAtBet: bet.priceAtBet,
-          drift: referenceDrift.toFixed(4),
+      const rangeWidth = priceRangeMax - priceRangeMin;
+      const rangeCenter = (priceRangeMin + priceRangeMax) / 2;
+      const centerDrift = Math.abs(rangeCenter - serverPrice);
+      
+      if (rangeWidth <= MAX_RANGE_WIDTH && centerDrift <= MAX_CENTER_DRIFT) {
+        // Client range is reasonable - accept it
+        clientPriceMin = priceRangeMin;
+        clientPriceMax = priceRangeMax;
+        resolutionPrice = rangeCenter;
+        logger.info('[Bet] Using client price range (validated)', {
+          clientMin: priceRangeMin.toFixed(4),
+          clientMax: priceRangeMax.toFixed(4),
+          serverPrice: serverPrice.toFixed(4),
+          rangeWidth: rangeWidth.toFixed(4),
+          centerDrift: centerDrift.toFixed(4),
         });
       } else {
-        // Price drift too large - fetch server price as fallback
-        const priceData = await getServerPrice();
-        const serverPrice = priceData.price;
-        const serverDrift = Math.abs(priceAtCrossing - serverPrice);
-        
-        if (serverDrift <= MAX_PRICE_DRIFT) {
-          resolutionPrice = priceAtCrossing;
-        } else {
-          resolutionPrice = serverPrice;
-          logger.warn('[Bet] Client crossing price rejected', {
-            priceAtCrossing,
-            serverPrice,
-            drift: serverDrift.toFixed(4),
-          });
-        }
+        // Range too wide or center too far from server - reject
+        logger.warn('[Bet] Client price range rejected', {
+          clientMin: priceRangeMin.toFixed(4),
+          clientMax: priceRangeMax.toFixed(4),
+          serverPrice: serverPrice.toFixed(4),
+          rangeWidth: rangeWidth.toFixed(4),
+          centerDrift: centerDrift.toFixed(4),
+          reason: rangeWidth > MAX_RANGE_WIDTH ? 'range too wide' : 'center drift too high',
+        });
       }
-    } else {
-      // No client price - fetch from server
-      const priceData = await getServerPrice();
-      resolutionPrice = priceData.price;
+    } else if (priceAtCrossing !== undefined && typeof priceAtCrossing === 'number' && priceAtCrossing > 0) {
+      // Legacy single-price support
+      const centerDrift = Math.abs(priceAtCrossing - serverPrice);
+      if (centerDrift <= MAX_CENTER_DRIFT) {
+        clientPriceMin = priceAtCrossing;
+        clientPriceMax = priceAtCrossing;
+        resolutionPrice = priceAtCrossing;
+        logger.info('[Bet] Using legacy single price', {
+          clientPrice: priceAtCrossing.toFixed(4),
+          serverPrice: serverPrice.toFixed(4),
+        });
+      }
     }
     
     // 6. SERVER-AUTHORITATIVE WIN DETERMINATION
-    // Win boundaries were calculated at bet time
-    // Resolution price is validated by server
+    // TOUCH mechanic: Win if price range OVERLAPS with bet's win range
     const { winPriceMin, winPriceMax } = bet;
     
     let isWin = false;
     
     if (winPriceMin !== undefined && winPriceMax !== undefined) {
-      // Check if resolution price falls within win boundaries (inclusive on both ends)
-      isWin = resolutionPrice >= winPriceMin && resolutionPrice <= winPriceMax;
+      if (clientPriceMin !== undefined && clientPriceMax !== undefined) {
+        // TOUCH detection: Ranges overlap if neither is completely above or below the other
+        isWin = clientPriceMin <= winPriceMax && clientPriceMax >= winPriceMin;
+      } else {
+        // Fallback: Use server price as a single point
+        isWin = serverPrice >= winPriceMin && serverPrice <= winPriceMax;
+      }
     } else {
       // Legacy bet without boundaries - default to loss
       logger.warn('[Bet] Legacy bet without win boundaries', {
@@ -147,11 +174,12 @@ export async function POST(request: NextRequest) {
       isWin = false;
     }
     
-    logger.info('[Bet] Win calculation', {
-      resolutionPrice,
-      priceAtBet: bet.priceAtBet,
-      winPriceMin,
-      winPriceMax,
+    logger.info('[Bet] Win calculation (touch detection)', {
+      clientPriceRange: clientPriceMin && clientPriceMax 
+        ? `${clientPriceMin.toFixed(4)} - ${clientPriceMax.toFixed(4)}` 
+        : 'none (using server)',
+      serverPrice: serverPrice.toFixed(4),
+      winRange: `${winPriceMin?.toFixed(4)} - ${winPriceMax?.toFixed(4)}`,
       isWin,
       clientHint: clientHint ?? 'none',
       clientMatchesServer: clientHint === isWin,

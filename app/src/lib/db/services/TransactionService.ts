@@ -20,6 +20,10 @@ const getCustodialAddress = () => process.env.CUSTODIAL_WALLET_ADDRESS || '';
 // SECURITY: Rate limiting - max 1 withdrawal per minute
 const WITHDRAWAL_COOLDOWN_MS = 60 * 1000;
 
+// SECURITY: Withdrawal limits
+const MAX_DAILY_WITHDRAWAL_SOL = Number(process.env.MAX_DAILY_WITHDRAWAL_SOL) || 5; // 5 SOL per day default
+const MAX_SINGLE_WITHDRAWAL_SOL = Number(process.env.MAX_SINGLE_WITHDRAWAL_SOL) || 2; // 2 SOL max per withdrawal
+
 export class TransactionService {
   private static instance: TransactionService | null = null;
   private indexesEnsured = false;
@@ -274,16 +278,48 @@ export class TransactionService {
   }
 
   /**
-   * Check if user can withdraw (rate limiting)
+   * Get user's daily withdrawal total (last 24 hours)
    */
-  async canWithdrawNow(walletAddress: string): Promise<{
+  async getDailyWithdrawalTotal(walletAddress: string): Promise<{
+    totalSol: number;
+    count: number;
+    remainingSol: number;
+  }> {
+    const collection = await this.getCollection();
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    
+    const dailyWithdrawals = await collection.find({
+      walletAddress,
+      type: 'withdrawal',
+      status: { $in: ['pending', 'confirmed'] }, // Count pending too (they're committed)
+      createdAt: { $gte: oneDayAgo }
+    }).toArray();
+    
+    const totalLamports = dailyWithdrawals.reduce((sum, tx) => sum + tx.solAmount, 0);
+    const totalSol = totalLamports / 1e9;
+    
+    return {
+      totalSol,
+      count: dailyWithdrawals.length,
+      remainingSol: Math.max(0, MAX_DAILY_WITHDRAWAL_SOL - totalSol)
+    };
+  }
+
+  /**
+   * Check if user can withdraw (rate limiting + daily limits)
+   */
+  async canWithdrawNow(walletAddress: string, requestedSolAmount?: number): Promise<{
     canWithdraw: boolean;
     cooldownRemaining?: number;
+    dailyLimit?: number;
+    dailyUsed?: number;
+    dailyRemaining?: number;
+    maxSingle?: number;
     reason?: string;
   }> {
     const collection = await this.getCollection();
     
-    // Check for recent withdrawals
+    // Check for recent withdrawals (cooldown)
     const recentWithdrawal = await collection.findOne({
       walletAddress,
       type: 'withdrawal',
@@ -299,7 +335,49 @@ export class TransactionService {
       };
     }
     
-    return { canWithdraw: true };
+    // Check daily limits
+    const dailyStats = await this.getDailyWithdrawalTotal(walletAddress);
+    
+    if (dailyStats.remainingSol <= 0) {
+      return {
+        canWithdraw: false,
+        dailyLimit: MAX_DAILY_WITHDRAWAL_SOL,
+        dailyUsed: dailyStats.totalSol,
+        dailyRemaining: 0,
+        reason: `Daily withdrawal limit reached (${MAX_DAILY_WITHDRAWAL_SOL} SOL). Resets in 24 hours.`
+      };
+    }
+    
+    // Check if requested amount exceeds limits
+    if (requestedSolAmount !== undefined) {
+      const requestedSol = requestedSolAmount / 1e9;
+      
+      if (requestedSol > MAX_SINGLE_WITHDRAWAL_SOL) {
+        return {
+          canWithdraw: false,
+          maxSingle: MAX_SINGLE_WITHDRAWAL_SOL,
+          reason: `Maximum single withdrawal is ${MAX_SINGLE_WITHDRAWAL_SOL} SOL`
+        };
+      }
+      
+      if (requestedSol > dailyStats.remainingSol) {
+        return {
+          canWithdraw: false,
+          dailyLimit: MAX_DAILY_WITHDRAWAL_SOL,
+          dailyUsed: dailyStats.totalSol,
+          dailyRemaining: dailyStats.remainingSol,
+          reason: `Exceeds daily limit. You can withdraw up to ${dailyStats.remainingSol.toFixed(4)} SOL today.`
+        };
+      }
+    }
+    
+    return { 
+      canWithdraw: true,
+      dailyLimit: MAX_DAILY_WITHDRAWAL_SOL,
+      dailyUsed: dailyStats.totalSol,
+      dailyRemaining: dailyStats.remainingSol,
+      maxSingle: MAX_SINGLE_WITHDRAWAL_SOL
+    };
   }
 
   /**
@@ -351,8 +429,14 @@ export class TransactionService {
       return { success: false, error: 'Account is suspended' };
     }
     
-    // SECURITY: Rate limiting
-    const rateCheck = await this.canWithdrawNow(walletAddress);
+    // Calculate SOL amount first (needed for limit checks)
+    const withdrawalFee = getWithdrawalFee();
+    const feeAmount = Math.floor(gemsAmount * withdrawalFee);
+    const netGems = gemsAmount - feeAmount;
+    const solAmount = Math.floor((netGems / getGemsPerSol()) * 1e9); // in lamports
+    
+    // SECURITY: Rate limiting + daily limits
+    const rateCheck = await this.canWithdrawNow(walletAddress, solAmount);
     if (!rateCheck.canWithdraw) {
       return { success: false, error: rateCheck.reason };
     }
@@ -383,11 +467,7 @@ export class TransactionService {
       };
     }
     
-    // Calculate fee and SOL amount
-    const withdrawalFee = getWithdrawalFee();
-    const feeAmount = Math.floor(gemsAmount * withdrawalFee);
-    const netGems = gemsAmount - feeAmount;
-    const solAmount = Math.floor((netGems / getGemsPerSol()) * 1e9); // in lamports
+    // Note: feeAmount, netGems, solAmount already calculated above for limit checks
     
     const collection = await this.getCollection();
     

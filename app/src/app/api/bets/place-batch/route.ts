@@ -110,11 +110,19 @@ export async function POST(request: NextRequest) {
     const priceData = await getServerPrice();
     const serverPrice = priceData.price;
     
-    // 5. Process each bet
-    const betService = BetService.getInstance();
+    // 5. Validate all bets first (no DB operations yet)
+    const validBets: Array<{
+      index: number;
+      columnId: string;
+      yIndex: number;
+      basePrice: number;
+      cellSize: number;
+      amount: number;
+      multiplier: number;
+      winPriceMin: number;
+      winPriceMax: number;
+    }> = [];
     const results: BetResult[] = [];
-    let successCount = 0;
-    let totalDeducted = 0;
     
     for (let i = 0; i < bets.length; i++) {
       const bet = bets[i];
@@ -144,45 +152,83 @@ export async function POST(request: NextRequest) {
         continue;
       }
       
+      // Validate yIndex is reasonable
+      const MAX_Y_INDEX = 100;
+      const MIN_Y_INDEX = -100;
+      if (bet.yIndex < MIN_Y_INDEX || bet.yIndex > MAX_Y_INDEX) {
+        results.push({ index: i, success: false, error: 'Invalid bet position' });
+        continue;
+      }
+      
       // Calculate grid-aligned win boundaries
       const cellYTop = bet.yIndex * bet.cellSize;
       const cellYBottom = (bet.yIndex + 1) * bet.cellSize;
       const winPriceMax = bet.basePrice + (bet.cellSize / 2 - cellYTop) / PRICE_SCALE;
       const winPriceMin = bet.basePrice + (bet.cellSize / 2 - cellYBottom) / PRICE_SCALE;
       
-      // Place the bet
-      const result = await betService.placeBet({
-        walletAddress,
-        sessionId,
-        amount: bet.amount,
-        multiplier: Math.round(bet.multiplier * 100) / 100,
+      // Add to valid bets for batch insert
+      validBets.push({
+        index: i,
         columnId: bet.columnId,
         yIndex: bet.yIndex,
         basePrice: bet.basePrice,
         cellSize: bet.cellSize,
-        priceAtBet: serverPrice,
+        amount: bet.amount,
+        multiplier: Math.round(bet.multiplier * 100) / 100,
         winPriceMin,
         winPriceMax,
       });
+    }
+    
+    // 6. OPTIMIZED: Single batch insert for all valid bets
+    let successCount = 0;
+    let totalDeducted = 0;
+    
+    if (validBets.length > 0) {
+      const betService = BetService.getInstance();
+      const batchResult = await betService.placeBetBatch(
+        walletAddress,
+        sessionId,
+        serverPrice,
+        validBets.map(vb => ({
+          columnId: vb.columnId,
+          yIndex: vb.yIndex,
+          basePrice: vb.basePrice,
+          cellSize: vb.cellSize,
+          amount: vb.amount,
+          multiplier: vb.multiplier,
+          winPriceMin: vb.winPriceMin,
+          winPriceMax: vb.winPriceMax,
+        }))
+      );
       
-      if (result.success && result.bet) {
-        results.push({
-          index: i,
-          success: true,
-          betId: result.bet._id?.toString(),
-          winPriceMin,
-          winPriceMax,
+      if (batchResult.success) {
+        // Map batch results back to original indices
+        batchResult.results.forEach((br, idx) => {
+          const originalIndex = validBets[idx].index;
+          results.push({
+            index: originalIndex,
+            success: br.success,
+            betId: br.betId,
+            winPriceMin: validBets[idx].winPriceMin,
+            winPriceMax: validBets[idx].winPriceMax,
+          });
+          if (br.success) successCount++;
         });
-        successCount++;
-        totalDeducted += bet.amount;
+        totalDeducted = batchResult.totalDeducted;
       } else {
-        results.push({ index: i, success: false, error: result.error || 'Failed to place bet' });
+        // Batch failed - mark all as failed
+        validBets.forEach(vb => {
+          results.push({ index: vb.index, success: false, error: batchResult.error || 'Batch failed' });
+        });
       }
     }
     
-    // 6. Get updated balance
-    const updatedUser = await userService.getUser(walletAddress);
-    const newBalance = updatedUser?.gemsBalance ?? (user.gemsBalance - totalDeducted);
+    // Sort results by original index
+    results.sort((a, b) => a.index - b.index);
+    
+    // 7. Calculate new balance
+    const newBalance = user.gemsBalance - totalDeducted;
     
     logger.info('[Bet Batch] Processed', {
       wallet: walletAddress.slice(0, 8),

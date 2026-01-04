@@ -379,6 +379,32 @@ class PhantomWallet {
         console.log(`✅ SOL sent via fallback! Tx: ${signature}`);
       }
       
+      // Wait for transaction to be confirmed before returning
+      // This prevents "Transaction not found on chain" errors
+      console.log('⏳ Waiting for transaction confirmation...');
+      try {
+        const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+        const confirmation = await connection.confirmTransaction({
+          signature,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+        }, 'confirmed');
+        
+        if (confirmation.value.err) {
+          console.error('❌ Transaction confirmed but failed:', confirmation.value.err);
+          return {
+            success: false,
+            error: 'TRANSACTION_FAILED',
+            message: 'Transaction failed on chain'
+          };
+        }
+        console.log('✅ Transaction confirmed!');
+      } catch (confirmError) {
+        // If confirmation times out, still return the signature
+        // The server will verify it
+        console.warn('⚠️ Confirmation wait timed out, but transaction may still succeed');
+      }
+      
       return {
         success: true,
         signature

@@ -127,6 +127,22 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // 5b. Validate yIndex is reasonable (must be within visible grid range)
+    // Typical visible range is roughly -50 to +50 cells from center
+    const MAX_Y_INDEX = 100;
+    const MIN_Y_INDEX = -100;
+    if (yIndex < MIN_Y_INDEX || yIndex > MAX_Y_INDEX) {
+      logger.warn('[Bet] Invalid yIndex - out of range', {
+        yIndex,
+        min: MIN_Y_INDEX,
+        max: MAX_Y_INDEX,
+      });
+      return NextResponse.json(
+        { error: 'Invalid bet position - please refresh' },
+        { status: 400 }
+      );
+    }
+    
     // 6. Calculate GRID-ALIGNED win price boundaries
     // These boundaries match EXACTLY to the cell at yIndex
     // Formula: priceY = -(price - basePrice) * PRICE_SCALE + cellSize/2

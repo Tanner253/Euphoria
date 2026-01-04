@@ -145,9 +145,15 @@ class GameAPIService {
   
   /**
    * Resolve a bet (server-authoritative)
-   * Server validates crossing price and uses stored win boundaries
+   * Server validates crossing price range for "touch" win detection
    */
-  async resolveBet(betId: string, clientHint?: boolean, priceAtCrossing?: number): Promise<ResolveBetResponse> {
+  async resolveBet(
+    betId: string, 
+    clientHint?: boolean, 
+    priceAtCrossing?: number,
+    priceRangeMin?: number,
+    priceRangeMax?: number
+  ): Promise<ResolveBetResponse> {
     if (!this.token) {
       return { success: false, error: 'Not authenticated' };
     }
@@ -156,8 +162,8 @@ class GameAPIService {
       const response = await fetch('/api/bets/resolve', {
         method: 'POST',
         headers: this.getHeaders(),
-        // Send the price at the moment the column crossed
-        body: JSON.stringify({ betId, clientHint, priceAtCrossing }),
+        // Send the price RANGE the line traveled through for "touch" detection
+        body: JSON.stringify({ betId, clientHint, priceAtCrossing, priceRangeMin, priceRangeMax }),
       });
       
       const data = await response.json();

@@ -93,7 +93,13 @@ export default function AdminPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [data, setData] = useState<DashboardData | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [lastRefresh, setLastRefresh] = useState<string>('');
+  const [isMounted, setIsMounted] = useState(false);
+  
+  // Prevent hydration mismatch by only rendering dynamic content after mount
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -108,7 +114,7 @@ export default function AdminPage() {
       setIsAuthorized(true);
       const result = await response.json();
       setData(result);
-      setLastRefresh(new Date());
+      setLastRefresh(new Date().toLocaleTimeString());
     } catch (err) {
       console.error('Failed to fetch admin data:', err);
     } finally {
@@ -136,7 +142,7 @@ export default function AdminPage() {
     );
   }
 
-  const formatDate = (dateStr: string) => new Date(dateStr).toLocaleString();
+  const formatDate = (dateStr: string) => isMounted ? new Date(dateStr).toLocaleString() : '...';
   const formatSol = (sol: number) => `${sol.toFixed(4)} SOL`;
   const formatGems = (gems: number) => gems.toLocaleString();
   const truncateAddress = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -176,7 +182,7 @@ export default function AdminPage() {
             Admin Dashboard
           </h1>
           <p className="text-zinc-500 text-sm mt-1">
-            Development Mode • Live Data • Last updated: {lastRefresh.toLocaleTimeString()}
+            Development Mode • Live Data • Last updated: {lastRefresh || '...'}
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -576,7 +582,7 @@ export default function AdminPage() {
                       </span>
                     </td>
                     <td className="px-3 py-2 text-center"><StatusBadge status={user.status} /></td>
-                    <td className="px-3 py-2 text-right text-zinc-500">{new Date(user.lastActiveAt).toLocaleDateString()}</td>
+                    <td className="px-3 py-2 text-right text-zinc-500">{isMounted ? new Date(user.lastActiveAt).toLocaleDateString() : '...'}</td>
                   </tr>
                 ))}
                 {(!data?.users || data.users.length === 0) && (

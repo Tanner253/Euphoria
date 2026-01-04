@@ -44,6 +44,15 @@ interface PendingWithdrawal {
   canCancel: boolean;
 }
 
+interface WithdrawalLimits {
+  dailyLimitSol: number;
+  dailyUsedSol: number;
+  dailyRemainingSol: number;
+  maxSingleSol: number;
+  withdrawalsToday: number;
+  cooldownRemaining?: number;
+}
+
 interface RatesData {
   gemsPerSol: number;
   feePercent: number;
@@ -51,6 +60,7 @@ interface RatesData {
   minDepositSol: number;
   custodialWallet: string;
   pendingWithdrawal?: PendingWithdrawal | null;
+  limits?: WithdrawalLimits;
 }
 
 // Pre-defined purchase amounts
@@ -117,7 +127,7 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
       });
     }
     
-    // Also fetch pending withdrawal status if authenticated
+    // Also fetch pending withdrawal status and limits if authenticated
     if (authToken) {
       try {
         const withdrawResponse = await fetch('/api/transactions/withdraw', {
@@ -126,6 +136,10 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
         if (withdrawResponse.ok) {
           const data = await withdrawResponse.json();
           setPendingWithdrawal(data.pendingWithdrawal || null);
+          // Update rates with limits
+          if (data.limits) {
+            setRates(prev => prev ? { ...prev, limits: data.limits } : prev);
+          }
         }
       } catch {
         // Ignore errors
@@ -214,10 +228,14 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
       console.error('Purchase error:', err);
       
       let userMessage = (err as Error).message || 'Transaction failed';
-      if (userMessage.includes('User rejected') || userMessage.includes('cancelled')) {
+      if (userMessage.includes('User rejected') || userMessage.includes('cancelled') || userMessage.includes('not been authorized')) {
         userMessage = 'Transaction cancelled';
       } else if (userMessage.includes('insufficient') || userMessage.includes('Insufficient')) {
         userMessage = 'Insufficient SOL balance';
+      } else if (userMessage.includes('not found on chain') || userMessage.includes('Transaction not found')) {
+        userMessage = 'Transaction pending - please wait and try again in a moment';
+      } else if (userMessage.includes('RPC') || userMessage.includes('network')) {
+        userMessage = 'Network error - please check your connection and try again';
       }
       
       setError(userMessage);
@@ -246,6 +264,19 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
     if (amount > gemsBalance) {
       setError('Insufficient gems balance');
       return;
+    }
+    
+    // Check daily limits (client-side pre-validation)
+    if (rates.limits) {
+      const solAmount = amount / rates.gemsPerSol * (1 - rates.feePercent / 100);
+      if (solAmount > rates.limits.maxSingleSol) {
+        setError(`Maximum single withdrawal is ${rates.limits.maxSingleSol} SOL`);
+        return;
+      }
+      if (solAmount > rates.limits.dailyRemainingSol) {
+        setError(`Exceeds daily limit. You can withdraw up to ${rates.limits.dailyRemainingSol.toFixed(4)} SOL today.`);
+        return;
+      }
     }
     
     // Mark as in-flight BEFORE any async operations
@@ -678,6 +709,28 @@ export default function GemsModal({ isOpen, onClose, onConnectWallet }: GemsModa
                       <p className="text-xs text-white/40 text-center">
                         Minimum withdrawal: {rates?.minWithdrawalGems || 100} gems • May be queued if funds low
                       </p>
+                      
+                      {/* Daily Withdrawal Limits */}
+                      {rates?.limits && (
+                        <div className="mt-3 p-2 bg-white/5 rounded-lg text-xs">
+                          <div className="flex justify-between text-white/50 mb-1">
+                            <span>Daily Limit</span>
+                            <span className="font-mono">
+                              {rates.limits.dailyUsedSol.toFixed(2)} / {rates.limits.dailyLimitSol} SOL
+                            </span>
+                          </div>
+                          <div className="w-full bg-white/10 rounded-full h-1.5">
+                            <div 
+                              className="bg-emerald-500 h-1.5 rounded-full transition-all"
+                              style={{ width: `${Math.min(100, (rates.limits.dailyUsedSol / rates.limits.dailyLimitSol) * 100)}%` }}
+                            />
+                          </div>
+                          <div className="flex justify-between text-white/40 mt-1">
+                            <span>Max single: {rates.limits.maxSingleSol} SOL</span>
+                            <span>{rates.limits.dailyRemainingSol.toFixed(2)} SOL left today</span>
+                          </div>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <p className="text-sm text-white/50 text-center py-4">

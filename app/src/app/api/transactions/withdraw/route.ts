@@ -330,13 +330,26 @@ export async function GET(request: NextRequest) {
     // Check for pending withdrawal
     const pendingWithdrawal = await WithdrawalQueue.getUserPendingWithdrawal(walletAddress);
     
+    // Get daily withdrawal limits
+    const dailyStats = await transactionService.getDailyWithdrawalTotal(walletAddress);
+    const rateCheck = await transactionService.canWithdrawNow(walletAddress);
+    
     return NextResponse.json({
       gemsBalance: user?.gemsBalance || 0,
       minWithdrawal: Number(process.env.MIN_WITHDRAWAL_GEMS) || 100,
       feePercent: (Number(process.env.WITHDRAWAL_FEE_PERCENT) || 0.02) * 100,
       gemsPerSol: Number(process.env.GEMS_PER_SOL) || 1000,
-      canWithdraw: hasDeposited && (user?.gemsBalance || 0) >= (Number(process.env.MIN_WITHDRAWAL_GEMS) || 100),
+      canWithdraw: hasDeposited && (user?.gemsBalance || 0) >= (Number(process.env.MIN_WITHDRAWAL_GEMS) || 100) && rateCheck.canWithdraw,
       requiresDeposit: !hasDeposited,
+      // Daily withdrawal limits
+      limits: {
+        dailyLimitSol: rateCheck.dailyLimit,
+        dailyUsedSol: dailyStats.totalSol,
+        dailyRemainingSol: dailyStats.remainingSol,
+        maxSingleSol: rateCheck.maxSingle,
+        withdrawalsToday: dailyStats.count,
+        cooldownRemaining: rateCheck.cooldownRemaining
+      },
       pendingWithdrawal: pendingWithdrawal ? {
         withdrawalId: pendingWithdrawal.withdrawalId,
         gemsAmount: pendingWithdrawal.gemsAmount,
