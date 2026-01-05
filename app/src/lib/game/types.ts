@@ -70,6 +70,7 @@ export interface GameState {
   particles: Particle[];
   specialCells: SpecialCell[];
   lastSpecialCellTime: number;
+  last5xCellTime: number;
 }
 
 export type VolatilityLevel = 'active' | 'low' | 'idle';

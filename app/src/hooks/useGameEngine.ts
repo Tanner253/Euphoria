@@ -874,6 +874,7 @@ export function useGameEngine({
     particles: [],
     specialCells: [],
     lastSpecialCellTime: Date.now(),
+    last5xCellTime: Date.now(),
   });
   
   // Track tab visibility to handle price jumps smoothly
@@ -946,8 +947,10 @@ export function useGameEngine({
     state.cameraY = (window.innerHeight / initCameraScale) / 2;
     
     // Regenerate columns with proper cells using generateColumn pattern
+    // Large buffer for high volatility movement
     const priceY = cellSize / 2;
-    for (let x = 0; x < window.innerWidth + 600; x += cellSize) {
+    const zoomBufferCols = (isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD) + 30;
+    for (let x = 0; x < window.innerWidth + cellSize * zoomBufferCols; x += cellSize) {
       const centerYIndex = Math.floor(priceY / cellSize);
       const newCol: Column = {
         id: Math.random().toString(36).substr(2, 9),
@@ -1108,11 +1111,11 @@ export function useGameEngine({
         const specialCell = state.specialCells.find(sc => sc.colId === clickedCol.id && sc.yIndex === yIndex);
         let isSpecialBet = false;
         if (specialCell) {
-          multiplier *= specialCell.bonusMultiplier; // 2x bonus!
+          multiplier *= specialCell.bonusMultiplier;
           isSpecialBet = true;
           // Remove the special cell once a bet is placed on it
           state.specialCells = state.specialCells.filter(sc => sc.id !== specialCell.id);
-          console.log('[Special Cell] 2X BONUS applied! New multiplier:', multiplier);
+          console.log(`[Special Cell] ${specialCell.bonusMultiplier}X BONUS applied! New multiplier:`, multiplier);
         }
         
         // IMMEDIATE WIN ZONE CALCULATION - same formula as server
@@ -1778,10 +1781,13 @@ export function useGameEngine({
       state.offsetX += state.currentSpeed * deltaTime;
 
       const rightEdge = state.offsetX + width;
-      // Generate columns far enough ahead for betting (MIN_BET_COLUMNS_AHEAD + buffer)
-      const colBufferAhead = (isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD) + 6;
-      if (state.lastGenX < rightEdge + cellSize * colBufferAhead) {
+      // Generate columns far enough ahead for betting (MIN_BET_COLUMNS_AHEAD + larger buffer for high volatility)
+      const colBufferAhead = (isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD) + 25;
+      // Generate MULTIPLE columns per frame - higher limit for fast movement during high volatility
+      let columnsGenerated = 0;
+      while (state.lastGenX < rightEdge + cellSize * colBufferAhead && columnsGenerated < 50) {
         generateColumn(state.lastGenX + cellSize, state.priceY);
+        columnsGenerated++;
       }
 
       const priceDelta = currentPrice - basePriceRef.current;
@@ -1963,20 +1969,34 @@ export function useGameEngine({
       //   state.particles = updateParticles(state.particles, deltaTime);
       // }
       
-      // === SPECIAL CELLS: Generate every 30 seconds ===
-      const SPECIAL_CELL_INTERVAL = 30000; // 30 seconds
+      // === SPECIAL CELLS: 2X every 30 seconds, 5X every 90 seconds (separate timers!) ===
+      const SPECIAL_CELL_INTERVAL_2X = 30000; // 30 seconds for 2x
+      const SPECIAL_CELL_INTERVAL_5X = 90000; // 90 seconds for 5x
       const timeSinceLastSpecial = now - state.lastSpecialCellTime;
+      const timeSinceLast5x = now - (state.last5xCellTime || 0);
       
-      if (timeSinceLastSpecial >= SPECIAL_CELL_INTERVAL && state.columns.length > 0) {
-        // Find a column ahead of current position (10-20 columns ahead)
-        const targetX = state.offsetX + headX + cellSize * (15 + Math.random() * 10);
+      // 5x spawns on its own timer (every 90 seconds, 25% chance)
+      const shouldTry5x = timeSinceLast5x >= SPECIAL_CELL_INTERVAL_5X && Math.random() < 0.25;
+      // 2x spawns on its own timer (every 30 seconds) - independent of 5x
+      const shouldTry2x = !shouldTry5x && timeSinceLastSpecial >= SPECIAL_CELL_INTERVAL_2X;
+      
+      if ((shouldTry5x || shouldTry2x) && state.columns.length > 0) {
+        const is5xBonus = shouldTry5x;
+        
+        // 5x spawns further out and further from center (harder to hit!)
+        const columnsAhead = is5xBonus 
+          ? (20 + Math.random() * 15) // 20-35 columns ahead for 5x
+          : (15 + Math.random() * 10); // 15-25 columns ahead for 2x
+        const targetX = state.offsetX + headX + cellSize * columnsAhead;
         const targetCol = state.columns.find(c => c.x >= targetX);
         
         if (targetCol) {
-          // Place it far from center (4-8 cells away from current price)
+          // Place it far from center - 5x is even further out!
           const currentCenterY = Math.floor(state.priceY / cellSize);
           const offsetDirection = Math.random() > 0.5 ? 1 : -1;
-          const offsetAmount = 4 + Math.floor(Math.random() * 5); // 4-8 cells away
+          const offsetAmount = is5xBonus 
+            ? (6 + Math.floor(Math.random() * 6)) // 6-11 cells away for 5x (very hard!)
+            : (4 + Math.floor(Math.random() * 5)); // 4-8 cells away for 2x
           const specialYIndex = currentCenterY + offsetDirection * offsetAmount;
           
           // Create special cell
@@ -1985,14 +2005,20 @@ export function useGameEngine({
             colId: targetCol.id,
             yIndex: specialYIndex,
             createdAt: now,
-            bonusMultiplier: 2.0, // 2x bonus!
+            bonusMultiplier: is5xBonus ? 5.0 : 2.0,
           };
           
           if (!state.specialCells) state.specialCells = [];
           state.specialCells.push(specialCell);
-          state.lastSpecialCellTime = now;
           
-          console.log('[Special Cell] Created at column', targetCol.id, 'yIndex', specialYIndex);
+          // Update the appropriate timer
+          if (is5xBonus) {
+            state.last5xCellTime = now;
+          } else {
+            state.lastSpecialCellTime = now;
+          }
+          
+          console.log(`[Special Cell] ${is5xBonus ? '⭐5X⭐' : '2X'} Created at column`, targetCol.id, 'yIndex', specialYIndex);
         }
       }
       
@@ -2038,8 +2064,13 @@ export function useGameEngine({
 
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      // Font sizes - larger for better readability
-      ctx.font = `${isMobile ? 18 : 14}px "JetBrains Mono", "SF Mono", monospace`;
+      // Font sizes - scale with cell size for zoom levels
+      // At zoomLevel 2.0 (low risk): cellSize=100, baseFontSize=14 -> 14px
+      // At zoomLevel 1.0 (medium): cellSize=50, baseFontSize=14 -> 14px  
+      // At zoomLevel 0.75 (high risk): cellSize=37, baseFontSize=14 -> ~11px (minimum)
+      const baseFontSize = isMobile ? 18 : 14;
+      const scaledFontSize = Math.max(10, Math.floor(baseFontSize * Math.min(1, cellSize / 50)));
+      ctx.font = `${scaledFontSize}px "JetBrains Mono", "SF Mono", monospace`;
       
       const startColIndex = state.columns.findIndex(c => c.x + cellSize > state.offsetX);
       const currentHeadX = state.offsetX + headX;
@@ -2109,21 +2140,23 @@ export function useGameEngine({
             ctx.arc(centerX, centerY, bubbleSize, 0, Math.PI * 2);
             ctx.fill();
             
-            // Bubble ring
-            ctx.strokeStyle = `rgba(0, 255, 255, ${0.2 + breathe * 0.15})`;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, bubbleSize - 2, 0, Math.PI * 2);
-            ctx.stroke();
+            // Bubble ring - only show in low/medium risk modes (large cells)
+            if (cellSize > 40) {
+              ctx.strokeStyle = `rgba(0, 255, 255, ${0.2 + breathe * 0.15})`;
+              ctx.lineWidth = 1.5;
+              ctx.beginPath();
+              ctx.arc(centerX, centerY, bubbleSize - 2, 0, Math.PI * 2);
+              ctx.stroke();
+            }
             
-            // Sparkle highlight on bubble
-            const sparkleAngle = animTime * 2 + cellSeed * 10;
-            const sparkleX = centerX + Math.cos(sparkleAngle) * bubbleSize * 0.5;
-            const sparkleY = centerY + Math.sin(sparkleAngle) * bubbleSize * 0.3 - bubbleSize * 0.2;
-            ctx.fillStyle = `rgba(255, 255, 255, ${0.4 + breathe * 0.3})`;
-            ctx.beginPath();
-            ctx.arc(sparkleX, sparkleY, 2 + breathe, 0, Math.PI * 2);
-            ctx.fill();
+            // Sparkle highlight on bubble - disabled for cleaner look
+            // const sparkleAngle = animTime * 2 + cellSeed * 10;
+            // const sparkleX = centerX + Math.cos(sparkleAngle) * bubbleSize * 0.5;
+            // const sparkleY = centerY + Math.sin(sparkleAngle) * bubbleSize * 0.3 - bubbleSize * 0.2;
+            // ctx.fillStyle = `rgba(255, 255, 255, ${0.4 + breathe * 0.3})`;
+            // ctx.beginPath();
+            // ctx.arc(sparkleX, sparkleY, 2 + breathe, 0, Math.PI * 2);
+            // ctx.fill();
             
             // HOVER: Expand and glow!
             if (isHovered) {
@@ -2175,12 +2208,17 @@ export function useGameEngine({
             ctx.fillStyle = isHovered 
               ? '#ffffff' 
               : `rgba(150, 255, 220, ${0.6 + textPulse * 0.2})`;
+            // Scale font with cell size for readability at all zoom levels
+            const multFontBase = isMobile ? 18 : 13;
+            const multFontSize = Math.max(9, Math.floor(multFontBase * Math.min(1.2, cellSize / 45)));
             ctx.font = isHovered 
-              ? `bold ${isMobile ? 20 : 15}px "JetBrains Mono", monospace`
-              : `${isMobile ? 18 : 13}px "JetBrains Mono", monospace`;
+              ? `bold ${multFontSize + 2}px "JetBrains Mono", monospace`
+              : `${multFontSize}px "JetBrains Mono", monospace`;
           } else {
             ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
-            ctx.font = `${isMobile ? 16 : 12}px "JetBrains Mono", monospace`;
+            const dimFontBase = isMobile ? 16 : 12;
+            const dimFontSize = Math.max(8, Math.floor(dimFontBase * Math.min(1.2, cellSize / 45)));
+            ctx.font = `${dimFontSize}px "JetBrains Mono", monospace`;
           }
           ctx.fillText(`${dynamicMultiplier}X`, screenX + cellSize / 2, y + cellSize / 2);
         });
@@ -2338,9 +2376,12 @@ export function useGameEngine({
           
           if (screenX < -cellSize || screenX > width) return;
           
-          // Rainbow hue cycling
-          const hue = (animTime * 60 + parseInt(sc.id, 36) % 360) % 360;
-          const pulse = Math.sin(animTime * 3) * 0.5 + 0.5;
+          // Color based on bonus type: 5X = gold/orange, 2X = rainbow
+          const is5xCell = sc.bonusMultiplier >= 5;
+          const hue = is5xCell 
+            ? 40 + Math.sin(animTime * 2) * 15 // Gold oscillating 25-55
+            : (animTime * 60 + parseInt(sc.id, 36) % 360) % 360; // Rainbow
+          const pulse = Math.sin(animTime * (is5xCell ? 5 : 3)) * 0.5 + 0.5; // 5X pulses faster
           
           // Outer glow rings (multiple for intense effect)
           for (let ring = 0; ring < 3; ring++) {
@@ -2394,13 +2435,14 @@ export function useGameEngine({
           ctx.arc(centerX, centerY, cellSize * 0.25, 0, Math.PI * 2);
           ctx.fill();
           
-          // "2X BONUS" text
+          // Bonus text - different for 5X vs 2X
+          const is5x = sc.bonusMultiplier >= 5;
           ctx.shadowBlur = 0;
           ctx.fillStyle = '#fff';
           ctx.font = `bold ${isMobile ? 11 : 9}px sans-serif`;
-          ctx.fillText('2X', centerX, centerY - 2);
+          ctx.fillText(is5x ? '5X' : '2X', centerX, centerY - 2);
           ctx.font = `${isMobile ? 8 : 6}px sans-serif`;
-          ctx.fillText('BONUS', centerX, centerY + 8);
+          ctx.fillText(is5x ? 'RARE!' : 'BONUS', centerX, centerY + 8);
           
           // Sparkle particles around the cell
           for (let i = 0; i < 4; i++) {
@@ -2614,7 +2656,11 @@ export function useGameEngine({
       state.currentSpeed = GAME_CONFIG.GRID_SPEED_ACTIVE;
       state.lastPrice = null;
       
-      for (let x = 0; x < window.innerWidth + 600; x += cellSize) {
+      // Generate enough columns for the visible area plus large buffer for high volatility
+      // Account for zoom level - smaller cells = more columns needed
+      const minBetCols = isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+      const neededWidth = window.innerWidth + cellSize * (minBetCols + 30);
+      for (let x = 0; x < neededWidth; x += cellSize) {
         generateColumn(x, cellSize / 2);
       }
     }

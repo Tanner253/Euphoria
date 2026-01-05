@@ -179,15 +179,15 @@ export function useAutoPlay({
     const interval = setInterval(() => {
       const now = Date.now();
       
-      // Human-like betting frequency: 1-4 seconds between bets
-      const minDelay = 1000;
-      const maxDelay = 4000;
+      // Human-like betting frequency: 3-8 seconds between bets (slower, more realistic)
+      const minDelay = 3000;
+      const maxDelay = 8000;
       const randomDelay = minDelay + Math.random() * (maxDelay - minDelay);
       
       if (now - lastBetTimeRef.current < randomDelay) return;
       
-      // Skip sometimes (humans don't bet every possible moment)
-      if (Math.random() < 0.3) return;
+      // Skip sometimes (humans don't bet every possible moment) - 50% skip chance
+      if (Math.random() < 0.5) return;
       
       const betPosition = calculateBetPosition();
       if (!betPosition) return;
