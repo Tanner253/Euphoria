@@ -11,7 +11,144 @@ import { useRef, useCallback, useEffect, useState } from 'react';
 import { GAME_CONFIG, calculateMultiplier } from '@/lib/game/gameConfig';
 import { getGameSounds } from '@/lib/audio/GameSounds';
 import { gameAPI } from '@/lib/services/GameAPI';
-import type { Bet, Column, GameState, VolatilityLevel } from '@/lib/game/types';
+import type { Bet, Column, GameState, VolatilityLevel, Particle, SpecialCell } from '@/lib/game/types';
+
+// ========== PARTICLE SYSTEM HELPERS ==========
+
+let particleIdCounter = 0;
+
+function createParticle(
+  x: number,
+  y: number,
+  type: Particle['type'],
+  color: string,
+  options?: Partial<Particle>
+): Particle {
+  const baseVelocity = type === 'confetti' ? 4 : type === 'sparkle' ? 2 : 1;
+  const angle = Math.random() * Math.PI * 2;
+  
+  return {
+    id: `particle-${particleIdCounter++}`,
+    x,
+    y,
+    vx: Math.cos(angle) * baseVelocity * (0.5 + Math.random()),
+    vy: Math.sin(angle) * baseVelocity * (0.5 + Math.random()) - 1, // slight upward bias
+    life: 1,
+    maxLife: type === 'confetti' ? 1.2 : type === 'sparkle' ? 0.8 : 0.6,
+    size: type === 'confetti' ? 4 + Math.random() * 4 : type === 'sparkle' ? 3 + Math.random() * 3 : 2,
+    color,
+    type,
+    rotation: Math.random() * 360,
+    rotationSpeed: (Math.random() - 0.5) * 720,
+    ...options,
+  };
+}
+
+function emitBetPlacedParticles(x: number, y: number): Particle[] {
+  const particles: Particle[] = [];
+  const colors = ['#c8e64c', '#e8f76c', '#98b62c', '#ffffff'];
+  
+  // Burst of sparkles
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2;
+    particles.push(createParticle(x, y, 'sparkle', colors[i % colors.length], {
+      vx: Math.cos(angle) * 3,
+      vy: Math.sin(angle) * 3,
+    }));
+  }
+  
+  // Some confetti
+  for (let i = 0; i < 6; i++) {
+    particles.push(createParticle(x, y, 'confetti', colors[i % colors.length]));
+  }
+  
+  return particles;
+}
+
+function emitWinParticles(x: number, y: number): Particle[] {
+  const particles: Particle[] = [];
+  const colors = ['#4ade80', '#22c55e', '#fbbf24', '#ffffff', '#f472b6'];
+  
+  // Big celebration burst
+  for (let i = 0; i < 20; i++) {
+    const angle = (i / 20) * Math.PI * 2;
+    const speed = 4 + Math.random() * 3;
+    particles.push(createParticle(x, y, 'confetti', colors[i % colors.length], {
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 2,
+      size: 5 + Math.random() * 5,
+      maxLife: 1.5,
+    }));
+  }
+  
+  // Sparkle ring
+  for (let i = 0; i < 16; i++) {
+    const angle = (i / 16) * Math.PI * 2;
+    particles.push(createParticle(x, y, 'sparkle', '#ffffff', {
+      vx: Math.cos(angle) * 5,
+      vy: Math.sin(angle) * 5,
+      maxLife: 1,
+    }));
+  }
+  
+  return particles;
+}
+
+function updateParticles(particles: Particle[], deltaTime: number): Particle[] {
+  return particles
+    .map(p => ({
+      ...p,
+      x: p.x + p.vx * deltaTime * 60,
+      y: p.y + p.vy * deltaTime * 60,
+      vy: p.vy + 0.15 * deltaTime * 60, // gravity
+      life: p.life - (deltaTime / p.maxLife),
+      rotation: (p.rotation || 0) + (p.rotationSpeed || 0) * deltaTime,
+    }))
+    .filter(p => p.life > 0);
+}
+
+function renderParticles(ctx: CanvasRenderingContext2D, particles: Particle[], offsetX: number) {
+  particles.forEach(p => {
+    const screenX = p.x - offsetX;
+    const alpha = Math.max(0, p.life);
+    const scale = 0.5 + p.life * 0.5;
+    
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(screenX, p.y);
+    ctx.rotate((p.rotation || 0) * Math.PI / 180);
+    ctx.scale(scale, scale);
+    
+    if (p.type === 'confetti') {
+      // Rectangle confetti
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+    } else if (p.type === 'sparkle') {
+      // Star sparkle
+      ctx.fillStyle = p.color;
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = p.color;
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const angle = (i / 4) * Math.PI * 2;
+        const innerAngle = angle + Math.PI / 4;
+        ctx.lineTo(Math.cos(angle) * p.size, Math.sin(angle) * p.size);
+        ctx.lineTo(Math.cos(innerAngle) * p.size * 0.4, Math.sin(innerAngle) * p.size * 0.4);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    } else {
+      // Circle bubble
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(0, 0, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    ctx.restore();
+  });
+}
 
 export interface WinInfo {
   amount: number;
@@ -19,6 +156,623 @@ export interface WinInfo {
   screenX: number;  // Screen X position of winning cell (for popup)
   screenY: number;  // Screen Y position of winning cell (for popup)
 }
+
+// ========== PRICE ACTION CHAT BUBBLES ==========
+// Messages the price head says based on movement
+
+interface ChatBubble {
+  message: string;
+  startTime: number;
+  duration: number;
+}
+
+const CHAT_MESSAGES = {
+  // Small up movement
+  smallUp: [
+    "lfg",
+    "nice",
+    "we move",
+    "green candle",
+    "up only",
+    "wagmi",
+    "vibes",
+    "based",
+    "cooking",
+    "pump it",
+    "bullish",
+    "here we go",
+    "warming up",
+    "momentum",
+    "tick tick tick",
+    "engine starting",
+    "waking up",
+    "signs of life",
+    "finally",
+    "ok ok ok",
+    "yes yes yes",
+    "there it is",
+    "she's moving",
+    "accumulation done?",
+    "breakout loading",
+    "coiling up",
+    "👀",
+    "hmm interesting",
+    "this is it",
+    "trust the process",
+    "patience paying off",
+    "told ya",
+    "ez clap",
+    "free money",
+    "send it",
+  ],
+  // Big pump
+  bigUp: [
+    "SOLANA TO $1000 🚀",
+    "WE'RE SO BACK",
+    "GENERATIONAL WEALTH",
+    "TOLD YOU SO",
+    "NEVER SELLING",
+    "RETIREMENT INCOMING",
+    "MOON MISSION",
+    "LAMBO WHEN",
+    "NEW ATH LOADING",
+    "BEARS IN SHAMBLES",
+    "VERTICAL",
+    "GOD CANDLE",
+    "FACE MELTING",
+    "SHORTS LIQUIDATED",
+    "NUMBER GO UP",
+    "PRINTER GO BRRR",
+    "CANT STOP WONT STOP",
+    "BEARS R FUK",
+    "ABSOLUTELY SENDING",
+    "THIS IS WHY WE HODL",
+    "WERE ALL GONNA MAKE IT",
+    "HOLY GREEN DILDO",
+    "GET IN LOSERS",
+    "THE FLIPPENING",
+    "SUPERCYCLE CONFIRMED",
+    "HYPERBITCOINIZATION",
+    "MAINSTREAM ADOPTION",
+    "INSTITUTIONAL FOMO",
+    "PARABOLIC",
+    "UP ONLY SZN",
+    "BEARS EXTINCT",
+    "SELLING IS COPE",
+    "DIAMOND HANDS REWARDED",
+    "I KNEW IT",
+    "WITNESS ME",
+  ],
+  // Small down movement
+  smallDown: [
+    "just a dip",
+    "shaking out weak hands",
+    "discount",
+    "loading zone",
+    "buy the dip",
+    "healthy pullback",
+    "accumulation",
+    "paper hands out",
+    "just noise",
+    "zoom out",
+    "sale time",
+    "black friday",
+    "cheaper coins",
+    "gift from whales",
+    "stop loss hunting",
+    "manipulation",
+    "its fine",
+    "normal volatility",
+    "expected",
+    "consolidation",
+    "nothing burger",
+    "meh",
+    "seen worse",
+    "whatever",
+    "doesnt phase me",
+    "diamond hands activated",
+    "not selling",
+    "buying opportunity",
+    "thank you whales",
+    "DCA time",
+    "stacking sats",
+    "lower = more coins",
+    "this is temporary",
+    "zoom out ser",
+  ],
+  // Big dump
+  bigDown: [
+    "JEETS GONNA JEET",
+    "WHO SOLD 💀",
+    "PAIN",
+    "THIS IS FINE 🔥",
+    "DEVS DO SOMETHING",
+    "RUG WHERE",
+    "MY PORTFOLIO 📉",
+    "NOT LIKE THIS",
+    "CAPITULATION",
+    "GG NO RE",
+    "SIR SIR SIR",
+    "HELLO SEC?",
+    "TURN IT OFF",
+    "MAKE IT STOP",
+    "I WANT MY MOM",
+    "RED WEDDING",
+    "BLOOD IN STREETS",
+    "FEAR INDEX 100",
+    "EXTREME GREED GONE",
+    "EVERYONE PANIC",
+    "SELL SELL SELL",
+    "jk diamond hands",
+    "THIS IS A TEST",
+    "SHAKEOUT SZN",
+    "WHALES ACCUMULATING",
+    "WEAK HANDS REKT",
+    "BYE PAPER HANDS",
+    "SEE YA LEVERAGED LONGS",
+    "SHOULDA TOOK PROFIT",
+    "GREED IS BAD",
+    "LESSON LEARNED",
+    "EXPENSIVE EDUCATION",
+    "TUITION PAID",
+    "AT LEAST I HAVE HEALTH",
+    "MONEY IS FAKE ANYWAY",
+    "BACK TO WENDYS",
+  ],
+  // Sideways/crab
+  sideways: [
+    "crab market",
+    "zzz",
+    "do something",
+    "boring",
+    "waiting...",
+    "🦀",
+    "chop chop",
+    "range bound",
+    "accumulating",
+    "tension building",
+    "*yawns*",
+    "wake me up when",
+    "anyone home?",
+    "hello?",
+    "price machine broke",
+    "flat line",
+    "are we stuck?",
+    "sideways forever",
+    "this is fine i guess",
+    "...",
+    "😴",
+    "snooze fest",
+    "paint drying vibes",
+    "grass growing energy",
+    "make it move",
+    "come on do something",
+    "poke it with a stick",
+    "*taps chart*",
+    "is this thing on?",
+    "testing testing",
+    "charts frozen?",
+    "refresh?",
+    "did internet die",
+    "checking pulse...",
+    "vital signs: meh",
+    "flatline but alive",
+    "in limbo",
+    "purgatory",
+    "the waiting game",
+    "patience...",
+    "any minute now",
+    "surely soon",
+    "copium inhaled",
+    "trust the crab",
+    "crab is friend",
+    "sideways is accumulation",
+    "whales loading quietly",
+    "calm before storm",
+    "spring loading",
+    "coiled snake",
+  ],
+  // User wins
+  userWin: [
+    "LETS GOOO",
+    "ez money",
+    "called it",
+    "you're cracked",
+    "WINNER",
+    "big brain play",
+    "skill diff",
+    "read like a book",
+    "too easy",
+    "CASH OUT 💰",
+    "nice one",
+    "there ya go",
+    "thats the one",
+    "good read",
+    "well played",
+    "smart money",
+    "you saw it",
+    "calculated",
+    "as expected",
+    "routine",
+    "another one",
+    "stacking wins",
+    "keep going",
+    "momentum",
+    "on a roll",
+    "feeling it",
+    "in the zone",
+    "locked in",
+    "cant miss rn",
+    "youre HIM",
+    "different gravy",
+    "galaxy brain",
+    "5head play",
+    "outplayed the algo",
+  ],
+  // User wins big (high multiplier)
+  userBigWin: [
+    "HOLY SHIT",
+    "WHALE ALERT 🐋",
+    "ABSOLUTELY MENTAL",
+    "RETIRING TODAY",
+    "INSANE HIT",
+    "GOD GAMER",
+    "THE PROPHET",
+    "SCREENSHOT THIS",
+    "NEW HIGH SCORE??",
+    "LEGENDARY",
+    "WHAT WAS THAT",
+    "DID THAT JUST HAPPEN",
+    "NO WAY",
+    "IMPOSSIBLE",
+    "HACKER??",
+    "REPORTED",
+    "THATS ILLEGAL",
+    "ARREST THIS MAN",
+    "TOO GOOD",
+    "ACTUALLY INSANE",
+    "CLIP THAT",
+    "SEND TO FRIENDS",
+    "TWITTER THIS",
+    "FLEXING RIGHTS EARNED",
+    "BRAGGING ALLOWED",
+    "PRINT THAT",
+    "FRAME IT",
+    "TELL YOUR KIDS",
+    "HISTORY MADE",
+    "WITNESSED GREATNESS",
+    "BUILT DIFFERENT",
+    "NOT HUMAN",
+    "AI TRADER??",
+    "FUTURE VISION",
+  ],
+  // User loses
+  userLoss: [
+    "rip",
+    "oof",
+    "next time",
+    "unlucky",
+    "pain",
+    "that hurt",
+    "ngmi",
+    "F",
+    "brutal",
+    "it happens",
+    "unfortunate",
+    "sadge",
+    "copium needed",
+    "inhale copium",
+    "its ok",
+    "shake it off",
+    "forget that one",
+    "on to the next",
+    "variance",
+    "part of the game",
+    "cant win em all",
+    "lesson learned",
+    "data point",
+    "information",
+    "noted",
+    "adjusting...",
+    "recalibrating",
+    "new strat incoming",
+    "adapting",
+    "learning experience",
+    "tuition",
+    "expensive but ok",
+    "worth the education",
+  ],
+  // User loses big (lost a lot)
+  userBigLoss: [
+    "REKT",
+    "DESTROYED",
+    "call the ambulance",
+    "thoughts & prayers",
+    "WASTED",
+    "emotional damage",
+    "back to fiat mining",
+    "liquidated irl",
+    "should've hedged",
+    "GUH",
+    "DEVASTATING",
+    "ANNIHILATED",
+    "OBLITERATED",
+    "VAPORIZED",
+    "GONE REDUCED TO ATOMS",
+    "THANOS SNAPPED",
+    "DELETE THIS",
+    "PRETEND IT DIDNT HAPPEN",
+    "MEMORY ERASED",
+    "WHAT LOSS?",
+    "UNREALIZED",
+    "PAPER LOSS",
+    "NOT REAL",
+    "SIMULATION",
+    "WAKE UP",
+    "ITS JUST A GAME",
+    "jk... unless?",
+    "haha... pain",
+    "internally screaming",
+    "externally calm",
+    "this is fine",
+    "everything is fine",
+    "totally fine",
+    "absolutely fine",
+  ],
+  // Near miss (almost won)
+  nearMiss: [
+    "SO CLOSE",
+    "by a hair",
+    "JUST missed it",
+    "that was tight",
+    "unlucky timing",
+    "robbed",
+    "one tick away",
+    "pain. so much pain",
+    "the tease",
+    "almost had it",
+    "INCHES",
+    "CENTIMETERS",
+    "NANOMETERS",
+    "a whisker",
+    "a breath",
+    "SO UNLUCKY",
+    "rigged??",
+    "jk not rigged",
+    "but like... maybe?",
+    "nah variance",
+    "pure bad luck",
+    "next one for sure",
+    "its coming",
+    "due a win",
+    "law of averages",
+    "regression incoming",
+    "justice will come",
+    "karma loading",
+    "universe owes you",
+    "the bounce back",
+    "redemption arc",
+    "comeback szn",
+  ],
+  // Close call (barely won)
+  closeCall: [
+    "CLUTCH",
+    "by a pixel",
+    "sweaty palms",
+    "heart attack",
+    "squeezed through",
+    "BARELY",
+    "thread the needle",
+    "living dangerous",
+    "calculated risk 😅",
+    "don't do that again",
+    "TOO CLOSE",
+    "CARDIAC ARREST",
+    "HEART STOPPED",
+    "UNCLENCHING",
+    "CAN BREATHE NOW",
+    "STRESS WIN",
+    "ANXIETY WIN",
+    "CORTISOL SPIKE",
+    "ADRENALINE RUSH",
+    "THAT WAS SCARY",
+    "but a wins a win",
+    "ill take it",
+    "not complaining",
+    "still counts",
+    "W is W",
+    "ugly but effective",
+    "function over form",
+    "result oriented",
+    "outcome > process",
+    "jk process matters",
+    "got lucky ngl",
+    "wont happen again",
+    "learning moment",
+  ],
+  // Streak - multiple wins
+  winStreak: [
+    "ON FIRE 🔥",
+    "can't miss",
+    "he's gaming",
+    "unstoppable",
+    "STREAK",
+    "hot hand",
+    "the zone",
+    "literally printing",
+    "goated",
+    "different breed",
+    "NUCLEAR",
+    "SUPERNOVA",
+    "TRANSCENDENT",
+    "ASCENDED",
+    "FINAL FORM",
+    "ULTRA INSTINCT",
+    "AVATAR STATE",
+    "SAGE MODE",
+    "BANKAI",
+    "PLUS ULTRA",
+    "GIGACHAD",
+    "SIGMA GRINDSET",
+    "BUILT DIFFERENT",
+    "NOT FROM HERE",
+    "ALIEN DNA",
+    "CHEAT CODES",
+    "AIMBOT",
+    "WALLHACKS",
+    "SCRIPTING",
+    "ACTUALLY HACKING",
+    "REPORT SENT",
+    "jk keep going",
+    "dont stop now",
+    "ride the wave",
+  ],
+  // Streak - multiple losses
+  lossStreak: [
+    "take a break?",
+    "rough patch",
+    "variance",
+    "stay strong",
+    "it'll turn",
+    "darkest before dawn",
+    "character building",
+    "humbling experience",
+    "down bad",
+    "gambler's fallacy?",
+    "its just variance",
+    "sample size",
+    "long term thinking",
+    "zoom out (temporally)",
+    "this too shall pass",
+    "storms dont last",
+    "after rain comes sun",
+    "spring follows winter",
+    "phoenix rising soon",
+    "comeback loading",
+    "redemption arc incoming",
+    "main character moment",
+    "the underdog story",
+    "they doubted him",
+    "wrote him off",
+    "but he persisted",
+    "never gave up",
+    "kept grinding",
+    "one day at a time",
+    "breathe",
+    "its ok fren",
+    "we're all gonna make it",
+    "eventually",
+    "probably",
+    "maybe",
+    "hopium",
+  ],
+};
+
+// Crypto fun facts for consolidation periods
+const CRYPTO_FUN_FACTS = [
+  "first btc pizza: 10,000 BTC",
+  "satoshi has ~1M btc",
+  "eth was $0.30 at ICO",
+  "21M btc max supply",
+  "btc mining uses more power than finland",
+  "lost btc: ~4 million",
+  "first altcoin: namecoin (2011)",
+  "vitalik was 19 when eth launched",
+  "sol does 65k tps",
+  "btc block time: 10 min",
+  "eth block time: 12 sec",
+  "nakamoto = 'central intelligence' in japanese",
+  "btc code has a newspaper headline",
+  "the genesis block cant be spent",
+  "hal finney got first btc transaction",
+  "btc ATH: $69,000 (nice)",
+  "crypto market cap peaked at $3T",
+  "defi TVL peaked at $180B",
+  "first nft sold for $69M",
+  "most expensive ENS: $2M",
+  "coinbase ipo: $86B valuation",
+  "mt gox lost 850k btc",
+  "quadriga: $190M lost forever",
+  "celsius: $4.7B frozen",
+  "ftx: $8B missing",
+  "luna crash: $60B gone in days",
+  "btc difficulty adjusts every 2016 blocks",
+  "eth burns fees since EIP-1559",
+  "solana has 400ms block times",
+  "avalanche has 3 chains",
+  "polygon was called matic",
+  "chainlink started in 2017",
+  "uniswap v1: nov 2018",
+  "compound invented yield farming",
+  "yearn started defi summer",
+  "sushi vampire attacked uni",
+  "olympus invented (3,3)",
+  "terra invented algorithmic stables",
+  "lido has most staked eth",
+  "blur flipped opensea",
+  "pudgy penguins: walmart deal",
+  "bayc floor was 0.08 eth",
+  "cryptopunks: free mint",
+  "first dao hack: $60M",
+  "tornado cash dev arrested",
+  "sec sued ripple for 3 years",
+  "grayscale won vs sec",
+  "btc etf: jan 2024",
+  "blackrock has billions in btc",
+  "michael saylor: 200k+ btc",
+  "el salvador: btc legal tender",
+  // Euphoria community facts
+  "LEXAPRO is a max extractor",
+  "JACK DUVAL is really 350 lbs",
+  "oSKNYo_Dev has a 90% bond rate",
+  "Austin a Chad",
+];
+
+// Track recently used messages to avoid repeats
+const recentMessagesRef: string[] = [];
+const MAX_RECENT_MESSAGES = 30;
+
+function pickRandomMessage(category: keyof typeof CHAT_MESSAGES): string {
+  const messages = CHAT_MESSAGES[category];
+  
+  // Filter out recently used messages
+  const availableMessages = messages.filter(m => !recentMessagesRef.includes(m));
+  
+  // If all messages used recently, clear history and use all
+  const pool = availableMessages.length > 0 ? availableMessages : messages;
+  
+  const selected = pool[Math.floor(Math.random() * pool.length)];
+  
+  // Track this message
+  recentMessagesRef.push(selected);
+  if (recentMessagesRef.length > MAX_RECENT_MESSAGES) {
+    recentMessagesRef.shift();
+  }
+  
+  return selected;
+}
+
+function pickRandomFunFact(): string {
+  const availableFacts = CRYPTO_FUN_FACTS.filter(f => !recentMessagesRef.includes(f));
+  const pool = availableFacts.length > 0 ? availableFacts : CRYPTO_FUN_FACTS;
+  
+  const selected = pool[Math.floor(Math.random() * pool.length)];
+  recentMessagesRef.push(selected);
+  if (recentMessagesRef.length > MAX_RECENT_MESSAGES) {
+    recentMessagesRef.shift();
+  }
+  
+  return "fun fact: " + selected;
+}
+
+// Track win/loss streaks for chat
+let consecutiveWins = 0;
+let consecutiveLosses = 0;
+
+// Track price movement state for smarter chat
+let lastSignificantMoveTime = Date.now(); // Initialize to now, not 0
+let priceWasFlat = false;
+let flatStartTime = 0;
 
 interface UseGameEngineOptions {
   isMobile: boolean;
@@ -117,6 +871,9 @@ export function useGameEngine({
     recentPrices: [],
     currentSpeed: GAME_CONFIG.GRID_SPEED_ACTIVE,
     lastPrice: null,
+    particles: [],
+    specialCells: [],
+    lastSpecialCellTime: Date.now(),
   });
   
   // Track tab visibility to handle price jumps smoothly
@@ -129,6 +886,15 @@ export function useGameEngine({
   // Hover and animation state
   const hoverCellRef = useRef<{ colId: string; yIndex: number } | null>(null);
   const mouseWorldPosRef = useRef<{ x: number; y: number } | null>(null);
+  
+  // Chat bubble state for price action personality
+  const chatBubbleRef = useRef<ChatBubble | null>(null);
+  const lastChatTimeRef = useRef<number>(0);
+  const lastFunFactTimeRef = useRef<number>(0); // Separate cooldown for fun facts
+  const priceMovementTrackerRef = useRef<{ price: number; time: number }[]>([]);
+  const CHAT_COOLDOWN = 3000; // Minimum 3 seconds between messages
+  const FUN_FACT_COOLDOWN = 45000; // Minimum 45 seconds between fun facts
+  const CHAT_DURATION = 2500; // How long each message shows
   
   // Win animation particles (reserved for future animation enhancements)
   // interface WinParticle { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number; }
@@ -334,8 +1100,20 @@ export function useGameEngine({
         // To find which cell index the price is in: floor(priceY / cellSize)
         const currentPriceYIndex = Math.floor(stateRef.current.priceY / cellSize);
         const dynamicMultiplier = calculateMultiplier(yIndex, currentPriceYIndex, zoomLevel);
-        const multiplier = parseFloat(dynamicMultiplier);
+        let multiplier = parseFloat(dynamicMultiplier);
         const localBetId = Math.random().toString(36).substr(2, 9);
+        
+        // 🌟 CHECK FOR SPECIAL CELL - Apply 2x bonus!
+        if (!state.specialCells) state.specialCells = [];
+        const specialCell = state.specialCells.find(sc => sc.colId === clickedCol.id && sc.yIndex === yIndex);
+        let isSpecialBet = false;
+        if (specialCell) {
+          multiplier *= specialCell.bonusMultiplier; // 2x bonus!
+          isSpecialBet = true;
+          // Remove the special cell once a bet is placed on it
+          state.specialCells = state.specialCells.filter(sc => sc.id !== specialCell.id);
+          console.log('[Special Cell] 2X BONUS applied! New multiplier:', multiplier);
+        }
         
         // IMMEDIATE WIN ZONE CALCULATION - same formula as server
         // This enables instant win zone rendering without waiting for server
@@ -358,10 +1136,17 @@ export function useGameEngine({
           basePriceAtBet: basePrice,
           winPriceMin,  // Calculated immediately for instant rendering
           winPriceMax,  // Server will overwrite with authoritative values
+          placedAt: Date.now(),  // For placement animation
+          isSpecialBonus: isSpecialBet,  // Mark if placed on special cell
         };
         
         state.bets.push(newBet);
         setPendingBetsCount(prev => prev + 1);
+        
+        // Special cell sound
+        if (isSpecialBet) {
+          playSound('win'); // Exciting sound for special cell!
+        }
         
         // IMMEDIATELY deduct balance (optimistic update for instant feedback)
         // Skip if auto-playing - infinite gems mode
@@ -562,7 +1347,17 @@ export function useGameEngine({
             bet.status = isWin ? 'won' : 'lost';
             const autoPlaying = isAutoPlayingRef.current;
             
+            // Calculate how close the outcome was for chat messages
+            const cellCenterY = (bet.yIndex + 0.5) * cellSize;
+            const priceDistFromCenter = yRange 
+              ? Math.min(Math.abs(yRange.minY - cellCenterY), Math.abs(yRange.maxY - cellCenterY))
+              : cellSize;
+            const wasClose = priceDistFromCenter < cellSize * 0.6;
+            
             if (isWin) {
+              consecutiveWins++;
+              consecutiveLosses = 0;
+              
               const winAmount = bet.amount * bet.multiplier;
               // Skip balance changes in auto-play mode (infinite gems)
               if (!autoPlaying) {
@@ -578,12 +1373,57 @@ export function useGameEngine({
               
               onWin({ amount: winAmount, id: bet.id, screenX, screenY });
               playSound('win');
+              
+              // Chat bubble for win
+              const now = Date.now();
+              if (now - lastChatTimeRef.current > 1500) { // Short cooldown for game events
+                let chatCategory: keyof typeof CHAT_MESSAGES;
+                if (consecutiveWins >= 3) {
+                  chatCategory = 'winStreak';
+                } else if (bet.multiplier >= 2.0) {
+                  chatCategory = 'userBigWin';
+                } else if (wasClose) {
+                  chatCategory = 'closeCall';
+                } else {
+                  chatCategory = 'userWin';
+                }
+                chatBubbleRef.current = {
+                  message: pickRandomMessage(chatCategory),
+                  startTime: now,
+                  duration: CHAT_DURATION,
+                };
+                lastChatTimeRef.current = now;
+              }
             } else {
+              consecutiveLosses++;
+              consecutiveWins = 0;
+              
               // Skip loss tracking in auto-play mode
               if (!autoPlaying) {
               onTotalLostChange(prev => prev + bet.amount);
               }
               playSound('lose');
+              
+              // Chat bubble for loss
+              const now = Date.now();
+              if (now - lastChatTimeRef.current > 1500) {
+                let chatCategory: keyof typeof CHAT_MESSAGES;
+                if (consecutiveLosses >= 3) {
+                  chatCategory = 'lossStreak';
+                } else if (wasClose) {
+                  chatCategory = 'nearMiss';
+                } else if (bet.amount >= 50) {
+                  chatCategory = 'userBigLoss';
+                } else {
+                  chatCategory = 'userLoss';
+                }
+                chatBubbleRef.current = {
+                  message: pickRandomMessage(chatCategory),
+                  startTime: now,
+                  duration: CHAT_DURATION,
+                };
+                lastChatTimeRef.current = now;
+              }
             }
             setPendingBetsCount(prev => Math.max(0, prev - 1));
             continue;
@@ -609,8 +1449,19 @@ export function useGameEngine({
           const autoPlaying = isAutoPlayingRef.current;
           bet.status = isWin ? 'won' : 'lost';
           
+          // Calculate how close the outcome was
+          const cellCenterY = (bet.yIndex + 0.5) * cellSize;
+          const priceDistFromCenter = yRange 
+            ? Math.min(Math.abs(yRange.minY - cellCenterY), Math.abs(yRange.maxY - cellCenterY))
+            : cellSize;
+          const wasClose = priceDistFromCenter < cellSize * 0.6;
+          
           if (isWin) {
+            consecutiveWins++;
+            consecutiveLosses = 0;
+            
             const winAmount = bet.amount * bet.multiplier;
+            
             if (!autoPlaying) {
               onBalanceChange(balanceRef.current + winAmount);
               balanceRef.current += winAmount;
@@ -622,11 +1473,56 @@ export function useGameEngine({
             const screenY = (bet.yIndex * cellSize + state.cameraY) * cameraScale;
             onWin({ amount: winAmount, id: bet.id, screenX, screenY });
             playSound('win');
+            
+            // Chat bubble for win
+            const now = Date.now();
+            if (now - lastChatTimeRef.current > 1500) {
+              let chatCategory: keyof typeof CHAT_MESSAGES;
+              if (consecutiveWins >= 3) {
+                chatCategory = 'winStreak';
+              } else if (bet.multiplier >= 2.0) {
+                chatCategory = 'userBigWin';
+              } else if (wasClose) {
+                chatCategory = 'closeCall';
+              } else {
+                chatCategory = 'userWin';
+              }
+              chatBubbleRef.current = {
+                message: pickRandomMessage(chatCategory),
+                startTime: now,
+                duration: CHAT_DURATION,
+              };
+              lastChatTimeRef.current = now;
+            }
           } else {
+            consecutiveLosses++;
+            consecutiveWins = 0;
+            
             if (!autoPlaying) {
               onTotalLostChange(prev => prev + bet.amount);
             }
             playSound('lose');
+            
+            // Chat bubble for loss
+            const now = Date.now();
+            if (now - lastChatTimeRef.current > 1500) {
+              let chatCategory: keyof typeof CHAT_MESSAGES;
+              if (consecutiveLosses >= 3) {
+                chatCategory = 'lossStreak';
+              } else if (wasClose) {
+                chatCategory = 'nearMiss';
+              } else if (bet.amount >= 50) {
+                chatCategory = 'userBigLoss';
+              } else {
+                chatCategory = 'userLoss';
+              }
+              chatBubbleRef.current = {
+                message: pickRandomMessage(chatCategory),
+                startTime: now,
+                duration: CHAT_DURATION,
+              };
+              lastChatTimeRef.current = now;
+            }
           }
           setPendingBetsCount(prev => Math.max(0, prev - 1));
           
@@ -967,12 +1863,153 @@ export function useGameEngine({
 
       state.lastPrice = currentPrice;
       checkBets(currentWorldX, state.priceY);
+      
+      // === CHAT BUBBLES: Price action personality ===
+      // Track price movements over time
+      priceMovementTrackerRef.current.push({ price: currentPrice, time: now });
+      // Keep only last 2 seconds of data
+      priceMovementTrackerRef.current = priceMovementTrackerRef.current.filter(p => now - p.time < 2000);
+      
+      // Check if we should show a new message
+      const timeSinceLastChat = now - lastChatTimeRef.current;
+      
+      if (timeSinceLastChat > CHAT_COOLDOWN && priceMovementTrackerRef.current.length > 10) {
+        const tracker = priceMovementTrackerRef.current;
+        const oldPrice = tracker[0].price;
+        const newPrice = tracker[tracker.length - 1].price;
+        const priceChange = ((newPrice - oldPrice) / oldPrice) * 100;
+        
+        // Thresholds for SOL price movements (these are % over ~2 seconds)
+        const isBigMove = Math.abs(priceChange) > 0.08;
+        const isMediumMove = Math.abs(priceChange) > 0.025;
+        const isFlat = Math.abs(priceChange) < 0.01;
+        
+        let category: keyof typeof CHAT_MESSAGES | null = null;
+        let message: string | null = null;
+        let shouldSpeak = false;
+        
+        // Track if we're seeing movement
+        if (isMediumMove) {
+          lastSignificantMoveTime = now;
+          priceWasFlat = false;
+          flatStartTime = 0;
+        } else if (isFlat && !priceWasFlat) {
+          priceWasFlat = true;
+          flatStartTime = now;
+        }
+        
+        const timeSinceMovement = now - lastSignificantMoveTime;
+        const timeBeenFlat = priceWasFlat && flatStartTime > 0 ? now - flatStartTime : 0;
+        
+        // BIG MOVES - high chance to comment
+        if (priceChange > 0.08) {
+          if (Math.random() < 0.6) { // 60% chance
+            category = 'bigUp';
+            shouldSpeak = true;
+          }
+        } else if (priceChange < -0.08) {
+          if (Math.random() < 0.6) {
+            category = 'bigDown';
+            shouldSpeak = true;
+          }
+        }
+        // MEDIUM MOVES - moderate chance
+        else if (priceChange > 0.025) {
+          if (Math.random() < 0.12) { // 12% chance
+            category = 'smallUp';
+            shouldSpeak = true;
+          }
+        } else if (priceChange < -0.025) {
+          if (Math.random() < 0.12) {
+            category = 'smallDown';
+            shouldSpeak = true;
+          }
+        }
+        // SIDEWAYS - only after being flat for 6+ seconds, low chance
+        else if (isFlat && timeBeenFlat > 6000 && timeBeenFlat < 20000) {
+          if (Math.random() < 0.03) { // 3% chance
+            category = 'sideways';
+            shouldSpeak = true;
+          }
+        }
+        // FUN FACTS - only after 20+ seconds flat, very low chance, separate longer cooldown
+        else if (isFlat && timeBeenFlat > 20000 && (now - lastFunFactTimeRef.current > FUN_FACT_COOLDOWN)) {
+          if (Math.random() < 0.01) { // 1% chance (reduced from 2%)
+            message = pickRandomFunFact();
+            shouldSpeak = true;
+            lastFunFactTimeRef.current = now; // Update fun fact specific cooldown
+          }
+        }
+        
+        if (shouldSpeak && (category || message)) {
+          chatBubbleRef.current = {
+            message: message || pickRandomMessage(category!),
+            startTime: now,
+            duration: message ? 3500 : CHAT_DURATION,
+          };
+          lastChatTimeRef.current = now;
+        }
+      }
+      
+      // Clear expired chat bubbles
+      if (chatBubbleRef.current && now - chatBubbleRef.current.startTime > chatBubbleRef.current.duration) {
+        chatBubbleRef.current = null;
+      }
+      
+      // Particles disabled for performance
+      // if (state.particles && state.particles.length > 0) {
+      //   state.particles = updateParticles(state.particles, deltaTime);
+      // }
+      
+      // === SPECIAL CELLS: Generate every 30 seconds ===
+      const SPECIAL_CELL_INTERVAL = 30000; // 30 seconds
+      const timeSinceLastSpecial = now - state.lastSpecialCellTime;
+      
+      if (timeSinceLastSpecial >= SPECIAL_CELL_INTERVAL && state.columns.length > 0) {
+        // Find a column ahead of current position (10-20 columns ahead)
+        const targetX = state.offsetX + headX + cellSize * (15 + Math.random() * 10);
+        const targetCol = state.columns.find(c => c.x >= targetX);
+        
+        if (targetCol) {
+          // Place it far from center (4-8 cells away from current price)
+          const currentCenterY = Math.floor(state.priceY / cellSize);
+          const offsetDirection = Math.random() > 0.5 ? 1 : -1;
+          const offsetAmount = 4 + Math.floor(Math.random() * 5); // 4-8 cells away
+          const specialYIndex = currentCenterY + offsetDirection * offsetAmount;
+          
+          // Create special cell
+          const specialCell: SpecialCell = {
+            id: `special-${Date.now()}`,
+            colId: targetCol.id,
+            yIndex: specialYIndex,
+            createdAt: now,
+            bonusMultiplier: 2.0, // 2x bonus!
+          };
+          
+          if (!state.specialCells) state.specialCells = [];
+          state.specialCells.push(specialCell);
+          state.lastSpecialCellTime = now;
+          
+          console.log('[Special Cell] Created at column', targetCol.id, 'yIndex', specialYIndex);
+        }
+      }
+      
+      // Clean up old special cells that have passed
+      if (state.specialCells && state.specialCells.length > 0) {
+        state.specialCells = state.specialCells.filter(sc => {
+          const col = state.columns.find(c => c.id === sc.colId);
+          if (!col) return false;
+          // Remove if passed the head
+          return col.x > state.offsetX - cellSize;
+        });
+      }
     };
 
     const render = () => {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       
+      const now = Date.now(); // For animations
       const physicalWidth = canvas.width;
       const physicalHeight = canvas.height;
       const state = stateRef.current;
@@ -999,8 +2036,8 @@ export function useGameEngine({
 
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      // Mobile fonts larger to compensate for camera zoom-out (0.65 scale)
-      ctx.font = `${isMobile ? 14 : 10}px "JetBrains Mono", "SF Mono", monospace`;
+      // Font sizes - larger for better readability
+      ctx.font = `${isMobile ? 18 : 14}px "JetBrains Mono", "SF Mono", monospace`;
       
       const startColIndex = state.columns.findIndex(c => c.x + cellSize > state.offsetX);
       const currentHeadX = state.offsetX + headX;
@@ -1027,66 +2064,219 @@ export function useGameEngine({
         const minBetColumns = isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
         const isBettable = col.x > currentHeadX + cellSize * minBetColumns;
 
+        // Smooth animation timing
+        const animTime = now * 0.001; // Seconds
+        
         Object.entries(col.cells).forEach(([yIdx]) => {
           const yIndex = parseInt(yIdx);
           const y = yIndex * cellSize;
           if (y < startY || y > endY) return;
 
-          ctx.strokeStyle = GAME_CONFIG.GRID_LINE_COLOR;
-          ctx.beginPath();
-          ctx.moveTo(screenX, y);
-          ctx.lineTo(screenX + cellSize, y);
-          ctx.stroke();
+          // Check if this cell is being hovered
+          const isHovered = hoverCellRef.current?.colId === col.id && 
+                           hoverCellRef.current?.yIndex === yIndex;
+          
+          // Check if there's already a bet on this cell
+          const hasBet = state.bets.some(b => b.colId === col.id && b.yIndex === yIndex);
+          if (hasBet) return;
 
-          ctx.fillStyle = GAME_CONFIG.GRID_DOT_COLOR;
+          // Unique animation offset per cell for organic feel
+          const cellSeed = (col.x * 0.01 + yIndex * 0.1) % 1;
+          
+          if (isBettable) {
+            // === CLICKABLE CELL - BUBBLE STYLE ===
+            const centerX = screenX + cellSize / 2;
+            const centerY = y + cellSize / 2;
+            
+            // Breathing bubble effect - each cell breathes at slightly different rate
+            const breatheSpeed = 2 + cellSeed * 0.5;
+            const breathe = Math.sin(animTime * breatheSpeed + cellSeed * Math.PI * 2) * 0.5 + 0.5;
+            const bubbleSize = (cellSize * 0.35) + breathe * (cellSize * 0.08);
+            
+            // Subtle gradient bubble background
+            const gradient = ctx.createRadialGradient(
+              centerX, centerY, 0,
+              centerX, centerY, bubbleSize
+            );
+            gradient.addColorStop(0, `rgba(0, 255, 200, ${0.15 + breathe * 0.1})`);
+            gradient.addColorStop(0.7, `rgba(0, 200, 255, ${0.08 + breathe * 0.05})`);
+            gradient.addColorStop(1, 'rgba(0, 150, 255, 0)');
+            
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, bubbleSize, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Bubble ring
+            ctx.strokeStyle = `rgba(0, 255, 255, ${0.2 + breathe * 0.15})`;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, bubbleSize - 2, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // Sparkle highlight on bubble
+            const sparkleAngle = animTime * 2 + cellSeed * 10;
+            const sparkleX = centerX + Math.cos(sparkleAngle) * bubbleSize * 0.5;
+            const sparkleY = centerY + Math.sin(sparkleAngle) * bubbleSize * 0.3 - bubbleSize * 0.2;
+            ctx.fillStyle = `rgba(255, 255, 255, ${0.4 + breathe * 0.3})`;
+            ctx.beginPath();
+            ctx.arc(sparkleX, sparkleY, 2 + breathe, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // HOVER: Expand and glow!
+            if (isHovered) {
+              const hoverPulse = Math.sin(animTime * 8) * 0.5 + 0.5;
+              const hoverSize = bubbleSize * 1.3;
+              
+              // Outer glow
+              ctx.shadowBlur = 20 + hoverPulse * 10;
+              ctx.shadowColor = '#00ffff';
+              
+              // Bright hover ring
+              ctx.strokeStyle = `rgba(0, 255, 255, ${0.8 + hoverPulse * 0.2})`;
+              ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.arc(centerX, centerY, hoverSize, 0, Math.PI * 2);
+              ctx.stroke();
+              
+              // Inner fill
+              ctx.fillStyle = `rgba(0, 255, 255, ${0.2 + hoverPulse * 0.1})`;
+              ctx.beginPath();
+              ctx.arc(centerX, centerY, hoverSize - 4, 0, Math.PI * 2);
+              ctx.fill();
+              
+              ctx.shadowBlur = 0;
+            }
+          } else {
+            // === NON-CLICKABLE - Subtle fade ===
+            const distToEdge = (currentHeadX + cellSize * minBetColumns - col.x) / cellSize;
+            const fadeFactor = Math.max(0, Math.min(1, distToEdge / 4));
+            ctx.fillStyle = `rgba(10, 0, 20, ${0.3 + fadeFactor * 0.3})`;
+            ctx.fillRect(screenX, y, cellSize, cellSize);
+          }
+
+          // Grid dots at corners - subtle
+          const dotAlpha = isBettable ? 0.4 : 0.15;
+          ctx.fillStyle = isBettable 
+            ? `rgba(0, 255, 200, ${dotAlpha})` 
+            : `rgba(255, 100, 150, ${dotAlpha})`;
           ctx.beginPath();
           ctx.arc(screenX, y, 1.5, 0, Math.PI * 2);
           ctx.fill();
 
-          // DYNAMIC: Calculate multiplier based on current price position and zoom/risk level
+          // Multiplier text
           const dynamicMultiplier = calculateMultiplier(yIndex, currentPriceYIndex, zoomLevel);
           const mult = parseFloat(dynamicMultiplier);
-          const intensity = Math.min((mult - 1) / 5, 1);
-          const alpha = isBettable ? (0.15 + intensity * 0.35) : 0.08;
-          ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+          
+          if (isBettable) {
+            const textPulse = Math.sin(animTime * 3 + cellSeed * 5) * 0.5 + 0.5;
+            ctx.fillStyle = isHovered 
+              ? '#ffffff' 
+              : `rgba(150, 255, 220, ${0.6 + textPulse * 0.2})`;
+            ctx.font = isHovered 
+              ? `bold ${isMobile ? 20 : 15}px "JetBrains Mono", monospace`
+              : `${isMobile ? 18 : 13}px "JetBrains Mono", monospace`;
+          } else {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+            ctx.font = `${isMobile ? 16 : 12}px "JetBrains Mono", monospace`;
+          }
           ctx.fillText(`${dynamicMultiplier}X`, screenX + cellSize / 2, y + cellSize / 2);
         });
       }
 
+      // Bet animation timing
+      const betAnimTime = now * 0.001;
+      
       state.bets.forEach(bet => {
         const col = state.columns.find(c => c.id === bet.colId);
         if (!col) return;
 
         const screenX = col.x - state.offsetX;
         const y = bet.yIndex * cellSize;
+        const centerX = screenX + cellSize / 2;
+        const centerY = y + cellSize / 2;
         
         if (screenX < -cellSize || screenX > width) return;
 
-        let fill = '#c8e64c';
-        let textColor = '#000';
+        const isPending = bet.status === 'pending' || bet.status === 'placing';
+        const isWon = bet.status === 'won';
+        const isLost = bet.status === 'lost';
         
-        if (bet.status === 'won') {
-          fill = '#4ade80';
-        } else if (bet.status === 'lost') {
-          fill = 'rgba(239, 68, 68, 0.3)';
-          textColor = '#ef4444';
+        // Unique seed for this bet's animations
+        const betSeed = parseInt(bet.id, 36) % 100 / 100;
+        const pulse = Math.sin(betAnimTime * 4 + betSeed * Math.PI * 2) * 0.5 + 0.5;
+        
+        if (isPending) {
+          // === PENDING BET - Simple clean style (no animations for performance) ===
+          
+          // Solid yellow-green background
+          ctx.fillStyle = '#c8e64c';
+          ctx.beginPath();
+          ctx.roundRect(screenX + 4, y + 4, cellSize - 8, cellSize - 8, 6);
+          ctx.fill();
+          
+          // Simple border
+          ctx.strokeStyle = '#a8c63c';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          
+          // Gem icon and amount
+          ctx.fillStyle = '#1a2e0a';
+          ctx.font = `bold ${isMobile ? 18 : 14}px sans-serif`;
+          ctx.fillText(`💎${bet.amount}`, centerX, centerY - 4);
+          ctx.font = `bold ${isMobile ? 14 : 11}px sans-serif`;
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+          ctx.fillText(`${bet.multiplier.toFixed(2)}X`, centerX, centerY + 12);
+          
+        } else if (isWon) {
+          // === WON BET - Simple clean green ===
+          
+          // Solid green background
+          ctx.fillStyle = '#22c55e';
+          ctx.beginPath();
+          ctx.roundRect(screenX + 4, y + 4, cellSize - 8, cellSize - 8, 6);
+          ctx.fill();
+          
+          // Light border
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          
+          // Win text
+          ctx.fillStyle = '#fff';
+          ctx.font = `bold ${isMobile ? 16 : 13}px sans-serif`;
+          ctx.fillText(`+${(bet.amount * bet.multiplier).toFixed(0)}`, centerX, centerY);
+          
+          // Small gem indicator
+          ctx.font = `${isMobile ? 11 : 9}px sans-serif`;
+          ctx.fillText('💎', centerX, centerY + 14);
+          
+        } else if (isLost) {
+          // === LOST BET - Fade out ===
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+          ctx.beginPath();
+          ctx.roundRect(screenX + 6, y + 6, cellSize - 12, cellSize - 12, 6);
+          ctx.fill();
+          
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          
+          // X mark
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(centerX - 8, centerY - 8);
+          ctx.lineTo(centerX + 8, centerY + 8);
+          ctx.moveTo(centerX + 8, centerY - 8);
+          ctx.lineTo(centerX - 8, centerY + 8);
+          ctx.stroke();
+          
+          // Lost amount text
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
+          ctx.font = `${isMobile ? 11 : 9}px sans-serif`;
+          ctx.fillText(`-${bet.amount}`, centerX, centerY + 16);
         }
-
-        ctx.fillStyle = fill;
-        ctx.fillRect(screenX + 3, y + 3, cellSize - 6, cellSize - 6);
-        
-        ctx.strokeStyle = bet.status === 'lost' ? '#ef4444' : '#e0f060';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(screenX + 3, y + 3, cellSize - 6, cellSize - 6);
-
-        ctx.fillStyle = textColor;
-        // Mobile fonts larger to compensate for camera zoom-out
-        ctx.font = `bold ${isMobile ? 16 : 11}px sans-serif`;
-        ctx.fillText(`💎${bet.amount}`, screenX + cellSize / 2, y + cellSize / 2 - (isMobile ? 6 : 6));
-        
-        ctx.font = `${isMobile ? 12 : 9}px sans-serif`;
-        ctx.fillStyle = bet.status === 'lost' ? '#ef4444' : 'rgba(0,0,0,0.7)';
-        ctx.fillText(`${bet.multiplier.toFixed(2)}X`, screenX + cellSize / 2, y + cellSize / 2 + (isMobile ? 6 : 8));
         
         // Win zone indicator (simple cyan corners - minimal rendering cost)
         if (bet.winPriceMin !== undefined && bet.winPriceMax !== undefined && bet.basePriceAtBet !== undefined && bet.status === 'pending') {
@@ -1127,6 +2317,107 @@ export function useGameEngine({
           ctx.stroke();
         }
       });
+      
+      // ✨ SPECIAL CELLS - Render with glowing rainbow effect
+      if (state.specialCells && state.specialCells.length > 0) {
+        const animTime = now * 0.001;
+        
+        state.specialCells.forEach(sc => {
+          const col = state.columns.find(c => c.id === sc.colId);
+          if (!col) return;
+          
+          const screenX = col.x - state.offsetX;
+          const y = sc.yIndex * cellSize;
+          const centerX = screenX + cellSize / 2;
+          const centerY = y + cellSize / 2;
+          
+          if (screenX < -cellSize || screenX > width) return;
+          
+          // Rainbow hue cycling
+          const hue = (animTime * 60 + parseInt(sc.id, 36) % 360) % 360;
+          const pulse = Math.sin(animTime * 3) * 0.5 + 0.5;
+          
+          // Outer glow rings (multiple for intense effect)
+          for (let ring = 0; ring < 3; ring++) {
+            const ringSize = cellSize * 0.5 + ring * 8 + pulse * 5;
+            const ringAlpha = 0.3 - ring * 0.1;
+            
+            ctx.strokeStyle = `hsla(${hue + ring * 30}, 100%, 60%, ${ringAlpha})`;
+            ctx.lineWidth = 3 - ring;
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = `hsl(${hue}, 100%, 50%)`;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, ringSize, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          
+          // Rotating star points
+          ctx.save();
+          ctx.translate(centerX, centerY);
+          ctx.rotate(animTime * 2);
+          
+          const starSize = cellSize * 0.35;
+          ctx.fillStyle = `hsla(${hue}, 100%, 70%, 0.9)`;
+          ctx.shadowBlur = 25;
+          ctx.shadowColor = `hsl(${hue}, 100%, 50%)`;
+          ctx.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const angle = (i / 6) * Math.PI * 2;
+            const outerX = Math.cos(angle) * starSize;
+            const outerY = Math.sin(angle) * starSize;
+            const innerAngle = angle + Math.PI / 6;
+            const innerX = Math.cos(innerAngle) * starSize * 0.4;
+            const innerY = Math.sin(innerAngle) * starSize * 0.4;
+            
+            if (i === 0) ctx.moveTo(outerX, outerY);
+            else ctx.lineTo(outerX, outerY);
+            ctx.lineTo(innerX, innerY);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+          
+          // Inner gem
+          const gemGrad = ctx.createRadialGradient(centerX - 5, centerY - 5, 0, centerX, centerY, cellSize * 0.3);
+          gemGrad.addColorStop(0, `hsla(${hue + 60}, 100%, 90%, 1)`);
+          gemGrad.addColorStop(0.5, `hsla(${hue}, 100%, 60%, 1)`);
+          gemGrad.addColorStop(1, `hsla(${hue - 30}, 100%, 40%, 1)`);
+          
+          ctx.fillStyle = gemGrad;
+          ctx.shadowBlur = 15;
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, cellSize * 0.25, 0, Math.PI * 2);
+          ctx.fill();
+          
+          // "2X BONUS" text
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = '#fff';
+          ctx.font = `bold ${isMobile ? 11 : 9}px sans-serif`;
+          ctx.fillText('2X', centerX, centerY - 2);
+          ctx.font = `${isMobile ? 8 : 6}px sans-serif`;
+          ctx.fillText('BONUS', centerX, centerY + 8);
+          
+          // Sparkle particles around the cell
+          for (let i = 0; i < 4; i++) {
+            const sparkAngle = animTime * 4 + (i / 4) * Math.PI * 2;
+            const sparkDist = cellSize * 0.6 + Math.sin(animTime * 6 + i) * 5;
+            const sparkX = centerX + Math.cos(sparkAngle) * sparkDist;
+            const sparkY = centerY + Math.sin(sparkAngle) * sparkDist;
+            
+            ctx.fillStyle = `hsla(${hue + i * 90}, 100%, 80%, ${0.6 + pulse * 0.4})`;
+            ctx.beginPath();
+            ctx.arc(sparkX, sparkY, 2 + pulse, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        });
+        
+        ctx.shadowBlur = 0;
+      }
+      
+      // Particles disabled for performance
+      // if (state.particles && state.particles.length > 0) {
+      //   renderParticles(ctx, state.particles, state.offsetX);
+      // }
 
       if (state.priceHistory.length > 1) {
         ctx.shadowBlur = 20;
@@ -1162,6 +2453,76 @@ export function useGameEngine({
         // Mobile circles larger to compensate for camera zoom-out
         ctx.arc(headX, state.priceY, isMobile ? 4 : 3, 0, Math.PI * 2);
         ctx.fill();
+        
+        // === CHAT BUBBLE above price head ===
+        const chatBubble = chatBubbleRef.current;
+        if (chatBubble) {
+          const elapsed = now - chatBubble.startTime;
+          const progress = elapsed / chatBubble.duration;
+          
+          // Fade in/out
+          let alpha = 1;
+          if (progress < 0.1) {
+            alpha = progress / 0.1; // Fade in
+          } else if (progress > 0.8) {
+            alpha = (1 - progress) / 0.2; // Fade out
+          }
+          
+          // Slight float up animation
+          const floatY = progress * 8;
+          
+          const bubbleX = headX;
+          const bubbleY = state.priceY - 35 - floatY;
+          const message = chatBubble.message;
+          
+          // Measure text
+          ctx.font = `bold ${isMobile ? 13 : 11}px "JetBrains Mono", monospace`;
+          const textWidth = ctx.measureText(message).width;
+          const padding = 10;
+          const bubbleWidth = textWidth + padding * 2;
+          const bubbleHeight = isMobile ? 26 : 22;
+          
+          // Draw bubble background
+          ctx.globalAlpha = alpha * 0.95;
+          ctx.fillStyle = '#1a1a2e';
+          ctx.beginPath();
+          ctx.roundRect(bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight / 2, bubbleWidth, bubbleHeight, 8);
+          ctx.fill();
+          
+          // Bubble border
+          ctx.strokeStyle = GAME_CONFIG.PRICE_LINE_COLOR;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          
+          // Little triangle pointer
+          ctx.fillStyle = '#1a1a2e';
+          ctx.beginPath();
+          ctx.moveTo(bubbleX - 6, bubbleY + bubbleHeight / 2);
+          ctx.lineTo(bubbleX, bubbleY + bubbleHeight / 2 + 8);
+          ctx.lineTo(bubbleX + 6, bubbleY + bubbleHeight / 2);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = GAME_CONFIG.PRICE_LINE_COLOR;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(bubbleX - 6, bubbleY + bubbleHeight / 2);
+          ctx.lineTo(bubbleX, bubbleY + bubbleHeight / 2 + 8);
+          ctx.lineTo(bubbleX + 6, bubbleY + bubbleHeight / 2);
+          ctx.stroke();
+          
+          // Cover the top of triangle with bubble color
+          ctx.fillStyle = '#1a1a2e';
+          ctx.fillRect(bubbleX - 7, bubbleY + bubbleHeight / 2 - 2, 14, 4);
+          
+          // Draw text
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = '#fff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(message, bubbleX, bubbleY);
+          
+          ctx.globalAlpha = 1;
+        }
       }
 
       ctx.restore();
@@ -1260,19 +2621,62 @@ export function useGameEngine({
     };
   }, [generateColumn, playSound, getCellSize, getHeadX, getPriceAxisWidth, isMobile, onBalanceChange, onTotalWonChange, onTotalLostChange, onWin]);
 
-  // Resize handler
+  // Resize handler - dynamic canvas sizing
   useEffect(() => {
+    let resizeTimeout: NodeJS.Timeout;
+    
     const handleResize = () => {
-      if (canvasRef.current) {
-        // Account for sidebar width
-        canvasRef.current.width = window.innerWidth - sidebarWidth;
-        canvasRef.current.height = window.innerHeight;
+      // Debounce resize events for performance
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        if (canvasRef.current) {
+          const canvas = canvasRef.current;
+          const newWidth = window.innerWidth - sidebarWidth;
+          const newHeight = window.innerHeight;
+          
+          // Only update if dimensions actually changed
+          if (canvas.width !== newWidth || canvas.height !== newHeight) {
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+            
+            // Generate additional columns if needed after resize
+            const state = stateRef.current;
+            if (state.initialized) {
+              const cellSize = getCellSize();
+              const neededX = state.offsetX + newWidth + 600;
+              
+              while (state.lastGenX < neededX) {
+                const newColX = state.lastGenX + cellSize;
+                generateColumn(newColX, state.priceY);
+              }
+            }
+          }
+        }
+      }, 50); // 50ms debounce
+    };
+    
+    // Listen for resize and orientation change
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    
+    // Also handle visibility change (tab switching can affect layout)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        handleResize();
       }
     };
-    window.addEventListener('resize', handleResize);
+    document.addEventListener('visibilitychange', handleVisibility);
+    
+    // Initial size
     handleResize();
-    return () => window.removeEventListener('resize', handleResize);
-  }, [sidebarWidth]);
+    
+    return () => {
+      clearTimeout(resizeTimeout);
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [sidebarWidth, getCellSize, generateColumn]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     setIsDragging(true);

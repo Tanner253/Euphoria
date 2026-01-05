@@ -111,54 +111,60 @@ export function useAutoPlay({
     const trend = analyzeTrend();
     const cellSize = isMobile ? GAME_CONFIG.CELL_SIZE_MOBILE : GAME_CONFIG.CELL_SIZE;
     const headX = isMobile ? GAME_CONFIG.HEAD_X_MOBILE : GAME_CONFIG.HEAD_X;
+    
+    // Use the actual minimum bet distance from config
+    const minBetColumnsAhead = isMobile 
+      ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE 
+      : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+    
+    // Virtual dimensions (what the game renders to after cameraScale is applied)
     const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+    const virtualWidth = canvas.width / cameraScale;
+    const virtualHeight = canvas.height / cameraScale;
     
-    // Canvas dimensions (accounting for sidebar)
-    const canvasWidth = canvas.width / (window.devicePixelRatio || 1);
-    const canvasHeight = canvas.height / (window.devicePixelRatio || 1);
+    // Price line is roughly at center Y in virtual space
+    const centerY = virtualHeight / 2;
     
-    // Price line is roughly at center Y
-    const centerY = canvasHeight / 2;
+    // Bet X position: minBetColumnsAhead + 1-4 extra columns for variety
+    // Calculate in VIRTUAL coordinates (not scaled)
+    const extraColumns = 1 + Math.floor(Math.random() * 4); // 1-4 extra columns
+    const columnsAhead = minBetColumnsAhead + extraColumns;
+    const virtualBetX = headX + columnsAhead * cellSize;
     
-    // Bet X position: 4-8 columns ahead of the price line head
-    const columnsAhead = 4 + Math.floor(Math.random() * 5); // 4-8 columns
-    const betScreenX = (headX + columnsAhead * cellSize) * cameraScale;
-    
-    // Bet Y position based on trend prediction
+    // Bet Y position based on trend prediction (in virtual coords)
     let cellOffset = 0;
     
     if (trend.direction === 'up') {
-      // Price going up - bet BELOW current price (price Y decreases when price goes up)
-      // More confident = bet closer to current; less confident = bet further
-      const confidence = Math.min(trend.strength * 20, 3); // 0-3 cells
+      const confidence = Math.min(trend.strength * 20, 3);
       cellOffset = -Math.floor(1 + Math.random() * (2 + confidence));
     } else if (trend.direction === 'down') {
-      // Price going down - bet ABOVE current price
       const confidence = Math.min(trend.strength * 20, 3);
       cellOffset = Math.floor(1 + Math.random() * (2 + confidence));
     } else {
-      // Neutral - random nearby bet (higher risk)
-      cellOffset = Math.floor(Math.random() * 5) - 2; // -2 to +2
+      cellOffset = Math.floor(Math.random() * 5) - 2;
     }
     
-    // Add some randomness for realism (humans aren't perfect)
     if (Math.random() < 0.3) {
-      // 30% chance to add extra randomness
       cellOffset += Math.floor(Math.random() * 3) - 1;
     }
     
-    // High volatility = more conservative (bet closer to current price)
     if (trend.volatility > 0.1) {
       cellOffset = Math.round(cellOffset * 0.6);
     }
     
-    const betScreenY = (centerY + cellOffset * cellSize) * cameraScale;
+    const virtualBetY = centerY + cellOffset * cellSize;
     
-    // Clamp to valid canvas area
-    const clampedX = Math.max(headX * cameraScale + cellSize * 4, Math.min(betScreenX, canvasWidth - 100));
-    const clampedY = Math.max(cellSize, Math.min(betScreenY, canvasHeight - cellSize));
+    // Clamp to valid virtual canvas area
+    const minX = headX + (minBetColumnsAhead + 1) * cellSize;
+    const clampedVirtualX = Math.max(minX, Math.min(virtualBetX, virtualWidth - 50));
+    const clampedVirtualY = Math.max(cellSize * 2, Math.min(virtualBetY, virtualHeight - cellSize * 2));
     
-    return { screenX: clampedX, screenY: clampedY };
+    // Return VIRTUAL coordinates - placeBetAt expects coordinates already divided by cameraScale
+    // (just like handlePointerDown divides client coords by cameraScale before passing)
+    return { 
+      screenX: clampedVirtualX, 
+      screenY: clampedVirtualY 
+    };
   }, [canvasRef, currentPrice, isMobile, analyzeTrend]);
   
   // Auto-play loop - INFINITE GEMS mode (no balance check needed)

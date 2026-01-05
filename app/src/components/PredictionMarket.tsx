@@ -191,7 +191,7 @@ export default function PredictionMarket() {
       <div className="absolute inset-0 z-10" style={{ left: sidebarWidth }}>
         <canvas 
           ref={canvasRef}
-          className={`block ${isDragging ? 'cursor-grabbing' : 'cursor-crosshair'}`}
+          className="block cursor-crosshair"
           style={{ 
             width: `calc(100vw - ${sidebarWidth}px)`, 
             height: '100vh',
@@ -204,86 +204,65 @@ export default function PredictionMarket() {
         />
       </div>
 
-      {/* Win notification - positioned above winning cell */}
+      {/* Win notification - Clean minimal style */}
       {lastWin && winAnimation && (
         <div 
           className={`
             absolute pointer-events-none z-50 flex flex-col items-center
             ${winAnimation === 'entering' ? 'win-popup-enter' : ''}
-            ${winAnimation === 'visible' ? 'win-popup-visible' : ''}
             ${winAnimation === 'exiting' ? 'win-popup-exit' : ''}
           `}
           style={{ 
-            left: Math.min(Math.max(lastWin.screenX + sidebarWidth, 60), window.innerWidth - 60),
-            top: Math.max(lastWin.screenY - 70, 10),
+            left: Math.min(Math.max(lastWin.screenX + sidebarWidth, 70), window.innerWidth - 70),
+            top: Math.max(lastWin.screenY - 60, 10),
           }}
         >
-          {/* Sparkle particles */}
-          <div className="absolute -inset-4 overflow-visible pointer-events-none">
-            {winAnimation === 'visible' && [...Array(8)].map((_, i) => (
-              <div
-                key={i}
-                className="absolute w-1.5 h-1.5 bg-yellow-300 rounded-full"
-                style={{
-                  left: `${50 + Math.cos(i * Math.PI / 4) * 140}%`,
-                  top: `${50 + Math.sin(i * Math.PI / 4) * 140}%`,
-                  animation: `sparkle 0.8s ease-out ${i * 0.1}s infinite`,
-                  boxShadow: '0 0 6px 2px rgba(253, 224, 71, 0.8)',
-                }}
-              />
-            ))}
-          </div>
-          
-          {/* Main popup bubble */}
+          {/* Clean popup */}
           <div 
-            className="relative px-4 py-2.5 rounded-2xl flex items-center gap-2"
+            className="px-5 py-2.5 rounded-xl flex items-center gap-2"
             style={{
-              background: 'linear-gradient(135deg, #4ade80 0%, #22c55e 50%, #16a34a 100%)',
-              boxShadow: winAnimation === 'visible' 
-                ? '0 0 30px rgba(74, 222, 128, 0.8), 0 0 60px rgba(74, 222, 128, 0.4), inset 0 1px 0 rgba(255,255,255,0.3)'
-                : '0 4px 20px rgba(0,0,0,0.3)',
-              border: '2px solid rgba(255, 255, 255, 0.4)',
+              background: 'linear-gradient(180deg, #4ade80 0%, #22c55e 100%)',
+              boxShadow: '0 4px 20px rgba(34, 197, 94, 0.5), 0 2px 8px rgba(0,0,0,0.2)',
+              border: '2px solid rgba(255, 255, 255, 0.3)',
             }}
-        >
+          >
             <Gem 
               size={isMobile ? 18 : 22} 
               className="text-white" 
-              style={{ filter: 'drop-shadow(0 0 4px rgba(255,255,255,0.8))' }}
             />
             <span 
-              className="font-mono font-black text-white tracking-tight"
+              className="font-mono font-bold text-white"
               style={{ 
-                fontSize: isMobile ? '1.1rem' : '1.25rem',
-                textShadow: '0 2px 4px rgba(0,0,0,0.3), 0 0 20px rgba(255,255,255,0.3)',
+                fontSize: isMobile ? '1.2rem' : '1.4rem',
+                textShadow: '0 1px 2px rgba(0,0,0,0.3)',
               }}
             >
               +{lastWin.amount.toFixed(0)}
             </span>
           </div>
           
-          {/* Downward pointing triangle (speech bubble tail) */}
+          {/* Small triangle pointer */}
           <div 
-            className="w-0 h-0"
             style={{ 
-              borderLeft: '10px solid transparent',
-              borderRight: '10px solid transparent',
-              borderTop: '12px solid #22c55e',
-              marginTop: '-2px',
-              filter: 'drop-shadow(0 4px 3px rgba(0,0,0,0.2))',
+              width: 0,
+              height: 0,
+              borderLeft: '8px solid transparent',
+              borderRight: '8px solid transparent',
+              borderTop: '10px solid #22c55e',
+              marginTop: '-1px',
             }}
           />
         </div>
       )}
 
-      {/* Bet Controls - positioned at bottom center, accounting for sidebar */}
-      <div style={{ left: sidebarWidth }}>
-        <BetControls
-          betAmount={betAmount}
-          onBetAmountChange={setBetAmount}
-          betOptions={getBetOptions()}
-          isMobile={isMobile}
-        />
-      </div>
+      {/* Bet Controls - fixed centered at bottom, offset for sidebar */}
+      <BetControls
+        betAmount={betAmount}
+        onBetAmountChange={setBetAmount}
+        betOptions={getBetOptions()}
+        isMobile={isMobile}
+        sidebarWidth={sidebarWidth}
+      />
       
       {/* Auto-Play Toggle - DEV ONLY */}
       {canAutoPlay && (

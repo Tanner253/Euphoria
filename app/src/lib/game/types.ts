@@ -18,6 +18,24 @@ export interface Bet {
   basePriceAtBet?: number;
   status: 'pending' | 'won' | 'lost' | 'placing' | 'error';
   resolving?: boolean;  // Flag to prevent duplicate resolution calls
+  placedAt?: number;    // Timestamp when bet was placed (for animations)
+  isSpecialBonus?: boolean; // Was placed on a special 2x cell
+}
+
+// Particle system for visual effects
+export interface Particle {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;      // velocity X
+  vy: number;      // velocity Y
+  life: number;    // 0-1, decreases over time
+  maxLife: number;
+  size: number;
+  color: string;
+  type: 'sparkle' | 'confetti' | 'bubble' | 'trail';
+  rotation?: number;
+  rotationSpeed?: number;
 }
 
 export interface Column {
@@ -25,6 +43,15 @@ export interface Column {
   x: number;
   cells: Record<number, { id: string; multiplier: string }>;
   centerIndex: number;
+}
+
+// Special golden cell with 2x payout bonus
+export interface SpecialCell {
+  id: string;
+  colId: string;
+  yIndex: number;
+  createdAt: number;
+  bonusMultiplier: number; // 2x additional multiplier
 }
 
 export interface GameState {
@@ -40,6 +67,9 @@ export interface GameState {
   recentPrices: number[];
   currentSpeed: number;
   lastPrice: number | null;
+  particles: Particle[];
+  specialCells: SpecialCell[];
+  lastSpecialCellTime: number;
 }
 
 export type VolatilityLevel = 'active' | 'low' | 'idle';

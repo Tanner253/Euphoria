@@ -30,8 +30,8 @@ export const GAME_CONFIG = {
   BET_AMOUNT_OPTIONS_MOBILE: [1, 5, 10] as number[],
   MAX_BET_AMOUNT: 100,
   INITIAL_BALANCE: 1000,
-  MIN_BET_COLUMNS_AHEAD: 10,        // Desktop: force bets further ahead
-  MIN_BET_COLUMNS_AHEAD_MOBILE: 6,  // Mobile: fewer columns due to screen width
+  MIN_BET_COLUMNS_AHEAD: 8,         // Desktop: force bets further ahead
+  MIN_BET_COLUMNS_AHEAD_MOBILE: 5,  // Mobile: fewer columns due to screen width
   
   // HOUSE EDGE: Win zone shrinkage
   // Shrinks the "hitbox" of each cell - price must enter inner portion to win
