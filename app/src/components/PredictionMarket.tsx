@@ -256,6 +256,36 @@ export default function PredictionMarket() {
         </div>
       )}
 
+      {/* Low Volatility Explanation - shows when market is slow */}
+      {(volatilityLevel === 'idle' || volatilityLevel === 'low') && (
+        <div 
+          className="fixed z-40 pointer-events-none animate-pulse"
+          style={{ 
+            top: isMobile ? '70px' : '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+          }}
+        >
+          <div className="bg-black/80 backdrop-blur-md border border-amber-500/40 rounded-xl px-4 py-2 text-center max-w-md">
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <span className="text-amber-400 text-lg">⏸️</span>
+              <span className="text-amber-400 font-bold text-sm uppercase tracking-wider">
+                {volatilityLevel === 'idle' ? 'Market Quiet' : 'Low Volume'}
+              </span>
+            </div>
+            <p className="text-white/70 text-xs leading-relaxed">
+              {volatilityLevel === 'idle' 
+                ? 'Price consolidating — grid slows to prevent easy horizontal wins'
+                : 'Low volatility detected — speed reduced for fair gameplay'
+              }
+            </p>
+            <p className="text-cyan-400/60 text-[10px] mt-1">
+              Game speeds up when price moves again
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Bet Controls - fixed centered at bottom, offset for sidebar */}
       <BetControls
         betAmount={betAmount}

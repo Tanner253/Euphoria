@@ -685,7 +685,6 @@ const CRYPTO_FUN_FACTS = [
   "btc code has a newspaper headline",
   "the genesis block cant be spent",
   "hal finney got first btc transaction",
-  "btc ATH: $69,000 (nice)",
   "crypto market cap peaked at $3T",
   "defi TVL peaked at $180B",
   "first nft sold for $69M",
@@ -1690,24 +1689,24 @@ export function useGameEngine({
       const sameRowTooLong = timeInSameRow > 1500; // More than 1.5 seconds in same row
       
       if (sameRowTooLong) {
-        // Price stuck in same row - apply severe speed penalty
-        // The longer we're stuck, the slower we go (approaching stop)
+        // Price stuck in same row - apply speed penalty but NEVER stop completely
+        // The longer we're stuck, the slower we go (but always moves forward)
         const stuckFactor = Math.min(timeInSameRow / 5000, 1); // 0 to 1 over 5 seconds
-        const penalizedSpeed = GAME_CONFIG.GRID_SPEED_IDLE * (1 - stuckFactor * 0.9);
+        const penalizedSpeed = GAME_CONFIG.GRID_SPEED_IDLE * (1 - stuckFactor * 0.7);
         setVolatilityLevel('idle');
-        return Math.max(penalizedSpeed, 0.005); // Near-zero but not completely stopped
+        return Math.max(penalizedSpeed, GAME_CONFIG.GRID_SPEED_MIN); // Always moves forward!
       }
       
-      // FLATLINE: Price barely moving at all
+      // FLATLINE: Price barely moving at all - still crawl forward
       if (priceRange < GAME_CONFIG.FLATLINE_THRESHOLD * 0.4) {
         setVolatilityLevel('idle');
-        return GAME_CONFIG.GRID_SPEED_IDLE;
+        return Math.max(GAME_CONFIG.GRID_SPEED_IDLE, GAME_CONFIG.GRID_SPEED_MIN);
       }
       
       // SIDEWAYS CONSOLIDATION: High volume but price staying flat
       if (isConsolidating || netMovement < GAME_CONFIG.FLATLINE_THRESHOLD * 0.5) {
         setVolatilityLevel('idle');
-        return GAME_CONFIG.GRID_SPEED_IDLE;
+        return Math.max(GAME_CONFIG.GRID_SPEED_IDLE, GAME_CONFIG.GRID_SPEED_MIN);
       }
       
       // LOW VOLATILITY: Small price range

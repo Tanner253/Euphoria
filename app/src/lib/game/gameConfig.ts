@@ -13,10 +13,11 @@ export const GAME_CONFIG = {
   ZOOM_LABELS: ['Low Risk', 'Medium', 'High Risk'] as const,
   
   // Grid speed based on volatility
-  // Speed scales with price movement - nearly stops during flatlines
+  // Speed scales with price movement - always moves forward (never stops completely)
   GRID_SPEED_ACTIVE: 0.8,      // Full speed during high volatility
   GRID_SPEED_LOW: 0.15,        // Reduced speed during low volatility  
-  GRID_SPEED_IDLE: 0.02,       // Near-crawl during flatline (was 0.08 - too fast!)
+  GRID_SPEED_IDLE: 0.06,       // Slow crawl during flatline (visible but slow)
+  GRID_SPEED_MIN: 0.03,        // Absolute minimum - always moves forward
   
   // Price visualization
   PRICE_SCALE: 2500,
