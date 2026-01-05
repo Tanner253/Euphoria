@@ -16,13 +16,16 @@ export const GAME_CONFIG = {
   MIN_BET: 1,
   MAX_BET: 10000,
   MIN_MULTIPLIER: 1.01,
-  MAX_MULTIPLIER: 50,
+  MAX_MULTIPLIER: 37,  // Was 50, reduced by 25%
   
   // House edge (percentage taken from winnings)
-  HOUSE_EDGE: 0.02, // 2%
+  HOUSE_EDGE: 0.05, // 5% (was 2%)
   
   // Minimum distance ahead to place bet (in columns)
-  MIN_BET_DISTANCE_COLUMNS: 2,
+  MIN_BET_DISTANCE_COLUMNS: 5,  // Was 2 - force bets further ahead
+  
+  // Win zone shrinkage (must match client gameConfig.ts)
+  WIN_ZONE_MARGIN: 0.15,  // 15% margin = 70% effective cell
   
   // Currency conversion: 1 SOL = X gems
   SOL_TO_GEMS_RATE: 1000, // 1 SOL = 1000 gems
@@ -37,11 +40,13 @@ export const GAME_CONFIG = {
 /**
  * Calculate multiplier based on distance from current price
  * Higher distance = higher multiplier (more risk)
+ * 
+ * NOTE: All multipliers reduced by 25% to improve house edge
  */
 export function calculateMultiplier(yIndex: number, currentPriceIndex: number): number {
   const dist = Math.abs(yIndex - currentPriceIndex);
-  // Base 1.2x, scales up exponentially with distance
-  let mult = 1.2 + Math.pow(dist, 1.6) * 0.4;
+  // Base 0.9x (was 1.2x, -25%), coefficient 0.3 (was 0.4, -25%)
+  let mult = 0.9 + Math.pow(dist, 1.6) * 0.3;
   
   // Apply house edge
   mult = mult * (1 - GAME_CONFIG.HOUSE_EDGE);

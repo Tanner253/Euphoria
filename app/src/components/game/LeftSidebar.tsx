@@ -191,7 +191,9 @@ export default function LeftSidebar({
         </div>
         
         {/* Mobile Floating Controls - Top Right - pointer-events-none on container */}
-        <div className="fixed top-2 right-14 z-40 flex gap-2 pointer-events-none">
+        <div className="fixed top-2 right-2 z-40 flex gap-2 pointer-events-none">
+          {/* Risk Toggle - HIDDEN on mobile (locked to Low Risk mode) */}
+          
           {/* Music Toggle */}
           <button
             onClick={toggleMusic}

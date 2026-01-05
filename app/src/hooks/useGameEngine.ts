@@ -72,6 +72,13 @@ export function useGameEngine({
   const [zoomIndex, setZoomIndex] = useState(0);
   const zoomLevel = GAME_CONFIG.ZOOM_LEVELS[zoomIndex];
   
+  // MOBILE: Force low risk mode (zoom index 0) - no medium/high risk on mobile
+  useEffect(() => {
+    if (isMobile && zoomIndex !== 0) {
+      setZoomIndex(0);
+    }
+  }, [isMobile, zoomIndex]);
+  
   const canvasRef = useRef<HTMLCanvasElement>(null!);
   const requestRef = useRef<number | null>(null);
   const basePriceRef = useRef<number | null>(null);
@@ -114,6 +121,10 @@ export function useGameEngine({
   
   // Track tab visibility to handle price jumps smoothly
   const lastFrameTimeRef = useRef<number>(Date.now());
+  
+  // DELTA TIME NORMALIZATION: Track time for frame-independent physics
+  // Target 60fps (16.67ms per frame) as baseline
+  const TARGET_FRAME_MS = 1000 / 60;
   
   // Hover and animation state
   const hoverCellRef = useRef<{ colId: string; yIndex: number } | null>(null);
@@ -201,7 +212,9 @@ export function useGameEngine({
     return Math.floor(baseSize * zoomLevel);
   }, [isMobile, zoomLevel]);
   const getHeadX = useCallback(() => isMobile ? GAME_CONFIG.HEAD_X_MOBILE : GAME_CONFIG.HEAD_X, [isMobile]);
-  const getPriceAxisWidth = useCallback(() => isMobile ? GAME_CONFIG.PRICE_AXIS_WIDTH_MOBILE : GAME_CONFIG.PRICE_AXIS_WIDTH, [isMobile]);
+  // Price axis hidden on mobile for more game space
+  const getPriceAxisWidth = useCallback(() => isMobile ? 0 : GAME_CONFIG.PRICE_AXIS_WIDTH, [isMobile]);
+  const getMinBetColumnsAhead = useCallback(() => isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD, [isMobile]);
 
   const generateColumn = useCallback((xPosition: number, currentPriceY: number) => {
     const state = stateRef.current;
@@ -251,7 +264,7 @@ export function useGameEngine({
   useEffect(() => {
     isAutoPlayingRef.current = isAutoPlaying;
   }, [isAutoPlaying]);
-  
+
   const placeBetAt = useCallback(async (screenX: number, screenY: number, allowDuplicate = false) => {
     const currentBalance = balanceRef.current;
     const currentBetAmount = betAmountRef.current;
@@ -288,7 +301,7 @@ export function useGameEngine({
         return false;
       }
       
-      const minBetX = state.offsetX + headX + cellSize * GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+      const minBetX = state.offsetX + headX + cellSize * getMinBetColumnsAhead();
       
       if (clickedCol.x > minBetX) {
         const cellKey = `${clickedCol.id}-${yIndex}`;
@@ -353,9 +366,9 @@ export function useGameEngine({
         // IMMEDIATELY deduct balance (optimistic update for instant feedback)
         // Skip if auto-playing - infinite gems mode
         if (!autoPlaying) {
-          const newBalance = currentBalance - currentBetAmount;
-          balanceRef.current = newBalance;
-          onBalanceChange(newBalance);
+        const newBalance = currentBalance - currentBetAmount;
+        balanceRef.current = newBalance;
+        onBalanceChange(newBalance);
         }
         
         // DEMO MODE: Done - no server call needed
@@ -518,7 +531,7 @@ export function useGameEngine({
               
               minY = Math.min(minY, y1, y2);
               maxY = Math.max(maxY, y1, y2);
-              
+          
               // Get Y at center for server communication
               if (segStartX <= colCenter && segEndX >= colCenter) {
                 centerY = getYAt(colCenter);
@@ -533,12 +546,13 @@ export function useGameEngine({
           const yRange = getYRangeInColumn(col.x, col.x + cellSize);
           const priceYAtCrossing = yRange?.centerY ?? headY;
           
-          // WIN DETECTION: Check if price line TOUCHED the cell at ANY point
-          // The bet wins if the price line's Y range overlaps with the cell's Y range
-          const cellTopY = bet.yIndex * cellSize;
-          const cellBottomY = cellTopY + cellSize;
+          // WIN DETECTION: Check if price line entered the INNER WIN ZONE of the cell
+          // Win zone is shrunk by WIN_ZONE_MARGIN on each side for house edge
+          const margin = cellSize * GAME_CONFIG.WIN_ZONE_MARGIN;
+          const cellTopY = bet.yIndex * cellSize + margin;      // Shrunk top
+          const cellBottomY = (bet.yIndex + 1) * cellSize - margin;  // Shrunk bottom
           
-          // Line touched the cell if ranges overlap
+          // Line must enter the shrunk win zone to count as a win
           const isWin = yRange 
             ? (yRange.minY < cellBottomY && yRange.maxY > cellTopY)
             : false;
@@ -552,8 +566,8 @@ export function useGameEngine({
               const winAmount = bet.amount * bet.multiplier;
               // Skip balance changes in auto-play mode (infinite gems)
               if (!autoPlaying) {
-                onBalanceChange(balanceRef.current + winAmount);
-                balanceRef.current += winAmount;
+              onBalanceChange(balanceRef.current + winAmount);
+              balanceRef.current += winAmount;
               }
               onTotalWonChange(prev => prev + winAmount - bet.amount);
               
@@ -567,7 +581,7 @@ export function useGameEngine({
             } else {
               // Skip loss tracking in auto-play mode
               if (!autoPlaying) {
-                onTotalLostChange(prev => prev + bet.amount);
+              onTotalLostChange(prev => prev + bet.amount);
               }
               playSound('lose');
             }
@@ -649,19 +663,19 @@ export function useGameEngine({
             });
             
             // Correct the optimistic update
-            bet.status = serverBet.status as 'won' | 'lost';
+          bet.status = serverBet.status as 'won' | 'lost';
             const autoPlaying = isAutoPlayingRef.current;
-            
+          
             if (serverIsWin && !clientWasWin) {
               // We said loss, server says win - add winnings
-              const winAmount = serverBet.actualWin;
+            const winAmount = serverBet.actualWin;
               if (!autoPlaying) {
                 onBalanceChange(balanceRef.current + winAmount);
                 balanceRef.current += winAmount;
               }
               onTotalWonChange(prev => prev + winAmount);
               onTotalLostChange(prev => prev - bet.amount);
-              playSound('win');
+            playSound('win');
             } else if (!serverIsWin && clientWasWin) {
               // We said win, server says loss - remove winnings
               const expectedWin = bet.amount * bet.multiplier;
@@ -689,12 +703,73 @@ export function useGameEngine({
       }
     };
 
-    const calculateVolatility = (currentPrice: number): number => {
+    // TIME-NORMALIZED: Track last volatility sample time for consistent sampling
+    let lastVolatilitySampleTime = 0;
+    const VOLATILITY_SAMPLE_INTERVAL_MS = 50; // Sample every 50ms regardless of framerate
+    
+    // SAME-ROW DETECTION: Prevent horizontal line wins by tracking Y cell position
+    // If price stays in the same row too long, STOP the grid completely
+    let lastYCellIndex: number | null = null;
+    let sameRowStartTime = 0;
+    let sameRowColumnsAdvanced = 0; // Track how many columns we've moved while in same row
+    const MAX_SAME_ROW_COLUMNS = 2; // Stop grid after passing 2 columns in same row
+    const SAME_ROW_SPEED_PENALTY = 0.1; // Severe speed reduction when stuck in same row
+    
+    // DIRECTION TRACKING: Detect sideways consolidation (high volume, flat price)
+    let lastDirectionChangePrice = 0;
+    let lastDirection: 'up' | 'down' | null = null;
+    let directionChanges = 0;
+    let directionChangeResetTime = 0;
+    const DIRECTION_CHANGE_WINDOW_MS = 3000; // Track direction changes over 3 seconds
+    const MIN_DIRECTION_CHANGE = 0.001; // Minimum price change to count as direction change
+    
+    const calculateVolatility = (currentPrice: number, now: number): number => {
       const state = stateRef.current;
       
-      state.recentPrices.push(currentPrice);
-      if (state.recentPrices.length > GAME_CONFIG.FLATLINE_WINDOW) {
-        state.recentPrices.shift();
+      // SAME-ROW TRACKING: Check if price is in the same Y cell as before
+      // This is the KEY to preventing horizontal line wins
+      const currentYCell = Math.floor(state.priceY / cellSize);
+      
+      if (lastYCellIndex === null) {
+        lastYCellIndex = currentYCell;
+        sameRowStartTime = now;
+        sameRowColumnsAdvanced = 0;
+      } else if (currentYCell !== lastYCellIndex) {
+        // Price changed rows! Reset tracking and allow movement
+        lastYCellIndex = currentYCell;
+        sameRowStartTime = now;
+        sameRowColumnsAdvanced = 0;
+      }
+      
+      // Calculate how many columns we've advanced while in the same row
+      // This is based on accumulated offset movement
+      const columnWidth = cellSize;
+      sameRowColumnsAdvanced = Math.floor((state.offsetX - (sameRowStartTime > 0 ? 0 : state.offsetX)) / columnWidth);
+      
+      // TIME-NORMALIZED: Only sample price at fixed time intervals
+      if (now - lastVolatilitySampleTime >= VOLATILITY_SAMPLE_INTERVAL_MS) {
+        state.recentPrices.push(currentPrice);
+        lastVolatilitySampleTime = now;
+        
+        if (state.recentPrices.length > GAME_CONFIG.FLATLINE_WINDOW) {
+          state.recentPrices.shift();
+        }
+        
+        // DIRECTION CHANGE TRACKING: Detect sideways/consolidation patterns
+        if (now - directionChangeResetTime > DIRECTION_CHANGE_WINDOW_MS) {
+          directionChanges = Math.floor(directionChanges * 0.5);
+          directionChangeResetTime = now;
+        }
+        
+        const priceDelta = currentPrice - lastDirectionChangePrice;
+        if (Math.abs(priceDelta) > MIN_DIRECTION_CHANGE) {
+          const currentDirection = priceDelta > 0 ? 'up' : 'down';
+          if (lastDirection !== null && currentDirection !== lastDirection) {
+            directionChanges++;
+          }
+          lastDirection = currentDirection;
+          lastDirectionChangePrice = currentPrice;
+        }
       }
       
       if (state.recentPrices.length < 10) {
@@ -705,17 +780,49 @@ export function useGameEngine({
       const maxPrice = Math.max(...state.recentPrices);
       const priceRange = maxPrice - minPrice;
       
-      if (priceRange < GAME_CONFIG.FLATLINE_THRESHOLD * 0.5) {
+      const firstPrice = state.recentPrices[0];
+      const netMovement = Math.abs(currentPrice - firstPrice);
+      
+      const isConsolidating = directionChanges >= 4 && netMovement < priceRange * 0.3;
+      
+      // SAME-ROW PENALTY: If we've been in the same row too long, severely slow down
+      // This PREVENTS more than 2-3 wins in a horizontal line
+      const timeInSameRow = now - sameRowStartTime;
+      const sameRowTooLong = timeInSameRow > 1500; // More than 1.5 seconds in same row
+      
+      if (sameRowTooLong) {
+        // Price stuck in same row - apply severe speed penalty
+        // The longer we're stuck, the slower we go (approaching stop)
+        const stuckFactor = Math.min(timeInSameRow / 5000, 1); // 0 to 1 over 5 seconds
+        const penalizedSpeed = GAME_CONFIG.GRID_SPEED_IDLE * (1 - stuckFactor * 0.9);
+        setVolatilityLevel('idle');
+        return Math.max(penalizedSpeed, 0.005); // Near-zero but not completely stopped
+      }
+      
+      // FLATLINE: Price barely moving at all
+      if (priceRange < GAME_CONFIG.FLATLINE_THRESHOLD * 0.4) {
         setVolatilityLevel('idle');
         return GAME_CONFIG.GRID_SPEED_IDLE;
-      } else if (priceRange < GAME_CONFIG.FLATLINE_THRESHOLD) {
-        setVolatilityLevel('low');
-        return GAME_CONFIG.GRID_SPEED_IDLE * 3;
-      } else {
-        setVolatilityLevel('active');
-        const volatilityMultiplier = Math.min(priceRange / 0.01, 1);
-        return GAME_CONFIG.GRID_SPEED_IDLE + (GAME_CONFIG.GRID_SPEED_ACTIVE - GAME_CONFIG.GRID_SPEED_IDLE) * volatilityMultiplier;
       }
+      
+      // SIDEWAYS CONSOLIDATION: High volume but price staying flat
+      if (isConsolidating || netMovement < GAME_CONFIG.FLATLINE_THRESHOLD * 0.5) {
+        setVolatilityLevel('idle');
+        return GAME_CONFIG.GRID_SPEED_IDLE;
+      }
+      
+      // LOW VOLATILITY: Small price range
+      if (priceRange < GAME_CONFIG.FLATLINE_THRESHOLD) {
+        setVolatilityLevel('low');
+        return GAME_CONFIG.GRID_SPEED_LOW;
+      }
+      
+      // ACTIVE TRENDING: Price is actually moving in a direction
+      setVolatilityLevel('active');
+      const trendStrength = netMovement / priceRange;
+      const rangeMultiplier = Math.min(priceRange / 0.008, 1);
+      const effectiveMultiplier = rangeMultiplier * (0.5 + trendStrength * 0.5);
+      return GAME_CONFIG.GRID_SPEED_LOW + (GAME_CONFIG.GRID_SPEED_ACTIVE - GAME_CONFIG.GRID_SPEED_LOW) * effectiveMultiplier;
     };
 
     const updatePhysics = () => {
@@ -727,6 +834,10 @@ export function useGameEngine({
       const now = Date.now();
       const timeSinceLastFrame = now - lastFrameTimeRef.current;
       lastFrameTimeRef.current = now;
+      
+      // DELTA TIME NORMALIZATION: Calculate time factor for frame-independent physics
+      // Clamp to prevent huge jumps on slow frames (max 3x normal speed)
+      const deltaTime = Math.min(timeSinceLastFrame, TARGET_FRAME_MS * 3) / TARGET_FRAME_MS;
 
       if (basePriceRef.current === null) {
         basePriceRef.current = currentPrice;
@@ -764,9 +875,11 @@ export function useGameEngine({
         // Let the price smoothly catch up instead of jumping
       }
 
-      const targetSpeed = calculateVolatility(currentPrice);
-      state.currentSpeed += (targetSpeed - state.currentSpeed) * 0.02;
-      state.offsetX += state.currentSpeed;
+      const targetSpeed = calculateVolatility(currentPrice, now);
+      // TIME-NORMALIZED: Speed smoothing and movement scaled by deltaTime
+      const speedSmoothing = 1 - Math.pow(0.98, deltaTime);
+      state.currentSpeed += (targetSpeed - state.currentSpeed) * speedSmoothing;
+      state.offsetX += state.currentSpeed * deltaTime;
 
       const rightEdge = state.offsetX + width;
       if (state.lastGenX < rightEdge + cellSize * 2) {
@@ -776,12 +889,62 @@ export function useGameEngine({
       const priceDelta = currentPrice - basePriceRef.current;
       state.targetPriceY = -priceDelta * GAME_CONFIG.PRICE_SCALE + cellSize / 2;
       
+      // TIME-NORMALIZED: Use time-based exponential smoothing for consistent movement
       // Use faster smoothing if the gap is large (catch up quicker)
       const diff = state.targetPriceY - state.priceY;
-      const smoothing = Math.abs(diff) > cellSize * 3 
+      const baseSmoothingFactor = Math.abs(diff) > cellSize * 3 
         ? 0.3  // Fast catch-up for large gaps
         : GAME_CONFIG.PRICE_SMOOTHING;
+      // Convert per-frame smoothing to time-based: 1 - (1 - factor)^deltaTime
+      const smoothing = 1 - Math.pow(1 - baseSmoothingFactor, deltaTime);
       state.priceY += diff * smoothing;
+      
+      // ========== HOUSE EDGE: BET AVOIDANCE ==========
+      // Gentle repulsion from nearby pending bets
+      // This makes the game slightly harder without being unfair
+      
+      let avoidanceForce = 0;
+      const currentWorldXForAvoid = state.offsetX + headX;
+      
+      for (const bet of state.bets) {
+        if (bet.status !== 'pending' && bet.status !== 'placing') continue;
+        
+        const col = state.columns.find(c => c.id === bet.colId);
+        if (!col) continue;
+        
+        // Only consider bets 1-4 columns ahead
+        const columnsAhead = (col.x - currentWorldXForAvoid) / cellSize;
+        if (columnsAhead < 0.5 || columnsAhead > 4) continue;
+        
+        // Calculate vertical distance to bet cell
+        const betCenterY = bet.yIndex * cellSize + cellSize / 2;
+        const distY = state.priceY - betCenterY;
+        const absDistY = Math.abs(distY);
+        
+        // Only apply avoidance if price is close to the bet (within 2 cells)
+        if (absDistY < cellSize * 2) {
+          // Repulsion strength: stronger when closer, weaker when further
+          // Proximity factor: 1 when on top of bet, 0 when 2 cells away
+          const proximityFactor = 1 - (absDistY / (cellSize * 2));
+          // Distance factor: stronger for bets that are closer (about to be crossed)
+          const distanceFactor = 1 - (columnsAhead / 4);
+          
+          // Repulsion direction: push away from bet center
+          const repulsionDir = distY > 0 ? 1 : -1;
+          
+          // Force: ~10% of cell size per nearby bet
+          const forceStrength = proximityFactor * distanceFactor * cellSize * 0.10;
+          avoidanceForce += repulsionDir * forceStrength;
+        }
+      }
+      
+      // Cap total avoidance at 20% of cell size
+      avoidanceForce = Math.max(-cellSize * 0.20, Math.min(cellSize * 0.20, avoidanceForce));
+      
+      // Apply avoidance to price position
+      state.priceY += avoidanceForce * deltaTime;
+      
+      // ========== END HOUSE EDGE ==========
       
       const currentWorldX = state.offsetX + headX;
       
@@ -798,7 +961,9 @@ export function useGameEngine({
       const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
       const virtualHeight = canvas.height / cameraScale;
       const targetCameraY = -state.priceY + virtualHeight / 2;
-      state.cameraY += (targetCameraY - state.cameraY) * 0.02;
+      // TIME-NORMALIZED: Camera smoothing scaled by deltaTime
+      const cameraSmoothing = 1 - Math.pow(0.98, deltaTime);
+      state.cameraY += (targetCameraY - state.cameraY) * cameraSmoothing;
 
       state.lastPrice = currentPrice;
       checkBets(currentWorldX, state.priceY);
@@ -859,7 +1024,8 @@ export function useGameEngine({
 
         const startY = -state.cameraY - cellSize * 3;
         const endY = -state.cameraY + height + cellSize * 3;
-        const isBettable = col.x > currentHeadX + cellSize * GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+        const minBetColumns = isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+        const isBettable = col.x > currentHeadX + cellSize * minBetColumns;
 
         Object.entries(col.cells).forEach(([yIdx]) => {
           const yIndex = parseInt(yIdx);
@@ -1000,64 +1166,65 @@ export function useGameEngine({
 
       ctx.restore();
 
-      // Price axis
-      ctx.fillStyle = '#0a0014';
-      ctx.fillRect(width - priceAxisWidth, 0, priceAxisWidth, height);
-      
-      ctx.strokeStyle = 'rgba(255, 100, 150, 0.4)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(width - priceAxisWidth, 0);
-      ctx.lineTo(width - priceAxisWidth, height);
-      ctx.stroke();
-
-      const displayPriceValue = priceRef.current ?? currentPrice ?? 100;
-      const centerScreenY = height / 2;
-      
-      // Mobile fonts larger to compensate for camera zoom-out
-      ctx.font = `${isMobile ? 15 : 11}px "JetBrains Mono", monospace`;
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      
-      const priceStep = isMobile ? 0.05 : 0.02;
-      const labelStep = isMobile ? 2 : 5;
-      
-      for (let i = -40; i <= 40; i++) {
-        const pixelOffset = i * (priceStep * GAME_CONFIG.PRICE_SCALE);
-        const screenY = centerScreenY + pixelOffset;
+      // Price axis - HIDDEN on mobile for more game space
+      if (!isMobile) {
+        ctx.fillStyle = '#0a0014';
+        ctx.fillRect(width - priceAxisWidth, 0, priceAxisWidth, height);
         
-        if (screenY < 0 || screenY > height) continue;
-        
-        const priceAtLevel = displayPriceValue - (i * priceStep);
-        
-        ctx.strokeStyle = 'rgba(255, 100, 150, 0.25)';
+        ctx.strokeStyle = 'rgba(255, 100, 150, 0.4)';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(width - priceAxisWidth, screenY);
-        ctx.lineTo(width - priceAxisWidth + 5, screenY);
+        ctx.moveTo(width - priceAxisWidth, 0);
+        ctx.lineTo(width - priceAxisWidth, height);
         ctx.stroke();
+
+        const displayPriceValue = priceRef.current ?? currentPrice ?? 100;
+        const centerScreenY = height / 2;
         
-        if (i % labelStep === 0) {
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-          ctx.fillText(`$${priceAtLevel.toFixed(2)}`, width - 6, screenY);
+        ctx.font = '11px "JetBrains Mono", monospace';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        
+        const priceStep = 0.02;
+        const labelStep = 5;
+        
+        for (let i = -40; i <= 40; i++) {
+          const pixelOffset = i * (priceStep * GAME_CONFIG.PRICE_SCALE);
+          const screenY = centerScreenY + pixelOffset;
+          
+          if (screenY < 0 || screenY > height) continue;
+          
+          const priceAtLevel = displayPriceValue - (i * priceStep);
+          
+          ctx.strokeStyle = 'rgba(255, 100, 150, 0.25)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(width - priceAxisWidth, screenY);
+          ctx.lineTo(width - priceAxisWidth + 5, screenY);
+          ctx.stroke();
+          
+          if (i % labelStep === 0) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.fillText(`$${priceAtLevel.toFixed(2)}`, width - 6, screenY);
+          }
         }
+        
+        ctx.fillStyle = GAME_CONFIG.PRICE_LINE_COLOR;
+        ctx.fillRect(width - priceAxisWidth, centerScreenY - 12, priceAxisWidth, 24);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px "JetBrains Mono", monospace';
+        ctx.fillText(`$${displayPriceValue.toFixed(2)}`, width - 6, centerScreenY);
       }
       
-      ctx.fillStyle = GAME_CONFIG.PRICE_LINE_COLOR;
-      ctx.fillRect(width - priceAxisWidth, centerScreenY - 12, priceAxisWidth, 24);
-      ctx.fillStyle = '#fff';
-      // Mobile fonts larger to compensate for camera zoom-out
-      ctx.font = `bold ${isMobile ? 17 : 12}px "JetBrains Mono", monospace`;
-      ctx.fillText(`$${displayPriceValue.toFixed(2)}`, width - 6, centerScreenY);
-      
-      // Speed bar
+      // Speed bar - full width on mobile since no price axis
+      const speedBarWidth = isMobile ? width : width - priceAxisWidth;
       const speedRatio = state.currentSpeed / GAME_CONFIG.GRID_SPEED_ACTIVE;
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.fillRect(0, height - 4, width - priceAxisWidth, 4);
+      ctx.fillRect(0, height - 4, speedBarWidth, 4);
       
       const speedColor = speedRatio > 0.5 ? '#4ade80' : speedRatio > 0.2 ? '#fbbf24' : '#ef4444';
       ctx.fillStyle = speedColor;
-      ctx.fillRect(0, height - 4, (width - priceAxisWidth) * speedRatio, 4);
+      ctx.fillRect(0, height - 4, speedBarWidth * speedRatio, 4);
     };
 
     const animate = () => {
@@ -1143,7 +1310,8 @@ export function useGameEngine({
     
     if (clickedCol) {
       const yIndex = Math.floor(worldY / cellSize);
-      const isBettable = clickedCol.x > state.offsetX + headX + cellSize * GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+      const minBetColumns = isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+      const isBettable = clickedCol.x > state.offsetX + headX + cellSize * minBetColumns;
       
       if (isBettable) {
         hoverCellRef.current = { colId: clickedCol.id, yIndex };
@@ -1266,8 +1434,13 @@ export function useGameEngine({
     b => b.status === 'pending' || b.status === 'placing'
   );
 
-  // Cycle through zoom levels - DISABLED when bets are active
+  // Cycle through zoom levels - DISABLED when bets are active or on mobile
   const cycleZoom = useCallback(() => {
+    // Mobile users are locked to low risk mode (index 0)
+    if (isMobile) {
+      return; // Zoom locked on mobile - low risk only
+    }
+    
     // Don't allow zoom changes while bets are on the board
     const activeBets = stateRef.current.bets.filter(
       b => b.status === 'pending' || b.status === 'placing'
@@ -1276,7 +1449,7 @@ export function useGameEngine({
       return; // Zoom locked while bets are active
     }
     setZoomIndex(prev => (prev + 1) % GAME_CONFIG.ZOOM_LEVELS.length);
-  }, []);
+  }, [isMobile]);
 
   return {
     canvasRef,

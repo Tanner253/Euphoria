@@ -8,11 +8,16 @@ export interface PriceUpdate {
 }
 
 interface UseSolanaPriceOptions {
-  /** Update interval in ms for throttling (default: 100ms) */
-  throttleMs?: number;
+  /** Update interval in ms for output (default: 100ms) */
+  updateIntervalMs?: number;
   /** Auto-reconnect on disconnect (default: true) */
   autoReconnect?: boolean;
-  /** Preferred provider: 'binance' | 'coinbase' (default: tries both) */
+  /** 
+   * Provider preference (default: 'coinbase' for consistency)
+   * - 'coinbase': Lower frequency (1-5/sec), smoother, RECOMMENDED for game consistency
+   * - 'binance': High frequency (50-200+/sec), spiky - NOT recommended
+   * - 'auto': Coinbase first, Binance as fallback
+   */
   provider?: 'binance' | 'coinbase' | 'auto';
 }
 
@@ -35,12 +40,25 @@ const PROVIDERS: Record<Provider, { url: string; parsePrice: (data: unknown) => 
   },
 };
 
+// NORMALIZED OUTPUT: Fixed update interval for consistent game experience
+const NORMALIZED_OUTPUT_INTERVAL_MS = 100; // 10 updates per second max
+
 /**
  * Hook to get real-time Solana price from WebSocket
- * Automatically falls back between providers if one fails
+ * 
+ * NORMALIZED FOR CONSISTENCY:
+ * - Uses Coinbase by default (1-5 updates/sec, smooth)
+ * - Falls back to Binance only on connection failure
+ * - Applies smoothing to normalize any provider differences
+ * - Outputs at fixed intervals regardless of input frequency
  */
 export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
-  const { throttleMs = 100, autoReconnect = true, provider = 'auto' } = options;
+  // CONSISTENCY: Default to Coinbase for uniform experience across all clients
+  const { 
+    updateIntervalMs = NORMALIZED_OUTPUT_INTERVAL_MS, 
+    autoReconnect = true, 
+    provider = 'coinbase'  // Changed from 'auto' to 'coinbase' for consistency
+  } = options;
   
   const [price, setPrice] = useState<number | null>(null);
   const [previousPrice, setPreviousPrice] = useState<number | null>(null);
@@ -49,18 +67,62 @@ export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
   const [activeProvider, setActiveProvider] = useState<Provider | null>(null);
   
   const wsRef = useRef<WebSocket | null>(null);
-  const lastUpdateRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const providerIndexRef = useRef(0);
+  
+  // PRICE NORMALIZATION: Collect raw prices and output smoothed values at fixed intervals
+  const rawPricesRef = useRef<number[]>([]);
+  const lastOutputTimeRef = useRef<number>(0);
+  const smoothedPriceRef = useRef<number | null>(null);
+  const outputIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Provider selection: Coinbase first (for consistency), Binance as fallback
   const getNextProvider = useCallback((): Provider => {
     if (provider !== 'auto') return provider;
-    const providers: Provider[] = ['binance', 'coinbase'];
+    // CONSISTENCY: Always try Coinbase first, Binance only as fallback
+    const providers: Provider[] = ['coinbase', 'binance'];
     const current = providers[providerIndexRef.current % providers.length];
     providerIndexRef.current++;
     return current;
   }, [provider]);
+
+  // Process raw prices and output normalized values
+  const processAndOutputPrice = useCallback(() => {
+    const rawPrices = rawPricesRef.current;
+    if (rawPrices.length === 0) return;
+    
+    // NORMALIZATION: Use the latest price (most recent)
+    // For spiky feeds like Binance, we take the last value in the batch
+    // For smooth feeds like Coinbase, this is usually just 1 value
+    const latestPrice = rawPrices[rawPrices.length - 1];
+    
+    // Apply exponential smoothing for consistent output
+    // This dampens any remaining spikiness from high-frequency feeds
+    const SMOOTHING_FACTOR = 0.3; // Lower = smoother, higher = more responsive
+    
+    if (smoothedPriceRef.current === null) {
+      smoothedPriceRef.current = latestPrice;
+    } else {
+      smoothedPriceRef.current = smoothedPriceRef.current + 
+        SMOOTHING_FACTOR * (latestPrice - smoothedPriceRef.current);
+    }
+    
+    // Clear the raw prices buffer
+    rawPricesRef.current = [];
+    
+    // Output the smoothed price
+    const outputPrice = smoothedPriceRef.current;
+    
+    setPrice(currentPrice => {
+      if (currentPrice !== null && currentPrice !== outputPrice) {
+        setPreviousPrice(currentPrice);
+      }
+      return outputPrice;
+    });
+    
+    lastOutputTimeRef.current = Date.now();
+  }, []);
 
   const connect = useCallback(() => {
     // Clean up existing connection
@@ -93,28 +155,28 @@ export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
             channels: ['ticker']
           }));
         }
+        
+        // Start the normalized output interval
+        if (outputIntervalRef.current) {
+          clearInterval(outputIntervalRef.current);
+        }
+        outputIntervalRef.current = setInterval(processAndOutputPrice, updateIntervalMs);
       };
 
       ws.onmessage = (event) => {
-        const now = Date.now();
-        
-        // Throttle updates
-        if (now - lastUpdateRef.current < throttleMs) {
-          return;
-        }
-        lastUpdateRef.current = now;
-
         try {
           const data = JSON.parse(event.data);
           const newPrice = config.parsePrice(data);
           
           if (newPrice !== null && !isNaN(newPrice)) {
-            setPrice(currentPrice => {
-              if (currentPrice !== null) {
-                setPreviousPrice(currentPrice);
-              }
-              return newPrice;
-            });
+            // NORMALIZATION: Collect raw prices, don't output directly
+            // This batches high-frequency updates and smooths them
+            rawPricesRef.current.push(newPrice);
+            
+            // Limit buffer size to prevent memory issues on very high frequency feeds
+            if (rawPricesRef.current.length > 100) {
+              rawPricesRef.current = rawPricesRef.current.slice(-50);
+            }
           }
         } catch {
           // Ignore parse errors for non-price messages
@@ -130,6 +192,12 @@ export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
         console.log(`[SolanaPrice] Disconnected from ${currentProvider}:`, event.code);
         setIsConnected(false);
         wsRef.current = null;
+        
+        // Clear the output interval
+        if (outputIntervalRef.current) {
+          clearInterval(outputIntervalRef.current);
+          outputIntervalRef.current = null;
+        }
 
         // Auto-reconnect with exponential backoff
         if (autoReconnect && reconnectAttemptsRef.current < 15) {
@@ -154,12 +222,17 @@ export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
         }, 2000);
       }
     }
-  }, [throttleMs, autoReconnect, getNextProvider]);
+  }, [updateIntervalMs, autoReconnect, getNextProvider, processAndOutputPrice]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
+    }
+    
+    if (outputIntervalRef.current) {
+      clearInterval(outputIntervalRef.current);
+      outputIntervalRef.current = null;
     }
     
     if (wsRef.current) {

@@ -147,8 +147,8 @@ export async function POST(request: NextRequest) {
         logger.info('[Bet] Using legacy single price', {
           clientPrice: priceAtCrossing.toFixed(4),
           serverPrice: serverPrice.toFixed(4),
-        });
-      }
+          });
+        }
     }
     
     // 6. SERVER-AUTHORITATIVE WIN DETERMINATION

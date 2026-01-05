@@ -35,9 +35,9 @@ async function verifyDepositOnChain(
     let tx = null;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       tx = await connection.getParsedTransaction(txSignature, {
-        maxSupportedTransactionVersion: 0,
-        commitment: 'confirmed'
-      });
+      maxSupportedTransactionVersion: 0,
+      commitment: 'confirmed'
+    });
       
       if (tx) break;
       

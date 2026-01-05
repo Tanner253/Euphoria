@@ -46,9 +46,9 @@ export class TransactionService {
     if (!this.indexesEnsured) {
       try {
         // Unique index on txSignature (sparse - only indexed when field exists)
-        await collection.createIndex(
-          { txSignature: 1 }, 
-          { unique: true, sparse: true }
+      await collection.createIndex(
+        { txSignature: 1 }, 
+        { unique: true, sparse: true }
         );
         
         // SECURITY: Partial unique index - only ONE pending withdrawal per wallet
@@ -128,14 +128,14 @@ export class TransactionService {
       { txSignature }, // Find by signature
       {
         $setOnInsert: {
-          walletAddress,
+      walletAddress,
           type: 'deposit' as const,
           status: 'pending' as const,
-          solAmount,
-          gemsAmount,
+      solAmount,
+      gemsAmount,
           txSignature,
           destinationAddress: getCustodialAddress(),
-          createdAt: new Date(),
+      createdAt: new Date(),
         }
       },
       { 
@@ -149,14 +149,14 @@ export class TransactionService {
     
     // Only log if this is a new deposit
     if (isNew && transaction.status === 'pending') {
-      await AuditService.getInstance().log({
-        walletAddress,
-        action: 'deposit_initiated',
-        description: `Deposit initiated: ${solAmount / 1e9} SOL = ${gemsAmount} gems`,
+    await AuditService.getInstance().log({
+      walletAddress,
+      action: 'deposit_initiated',
+      description: `Deposit initiated: ${solAmount / 1e9} SOL = ${gemsAmount} gems`,
         relatedId: transaction._id!.toString(),
-        relatedCollection: 'transactions',
+      relatedCollection: 'transactions',
         newValue: { solAmount, gemsAmount, txSignature: txSignature.slice(0, 16) },
-      });
+    });
     }
     
     return { transaction, isNew };
@@ -529,8 +529,8 @@ export class TransactionService {
     // SECURITY: Try to insert - will fail if duplicate due to unique partial index
     // This is the final safety net if race condition bypasses the check above
     try {
-      const result = await collection.insertOne(transaction);
-      transaction._id = result.insertedId;
+    const result = await collection.insertOne(transaction);
+    transaction._id = result.insertedId;
     } catch (err: unknown) {
       // Check if it's a duplicate key error (code 11000)
       const mongoError = err as { code?: number };

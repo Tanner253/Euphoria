@@ -206,13 +206,13 @@ export async function POST(request: NextRequest) {
         // Map batch results back to original indices
         batchResult.results.forEach((br, idx) => {
           const originalIndex = validBets[idx].index;
-          results.push({
+        results.push({
             index: originalIndex,
             success: br.success,
             betId: br.betId,
             winPriceMin: validBets[idx].winPriceMin,
             winPriceMax: validBets[idx].winPriceMax,
-          });
+        });
           if (br.success) successCount++;
         });
         totalDeducted = batchResult.totalDeducted;

@@ -24,7 +24,9 @@ import { Gem, Bot } from 'lucide-react';
 
 export default function PredictionMarket() {
   // External hooks
-  const { price, previousPrice, isConnected: priceConnected, priceDirection, activeProvider } = useSolanaPrice({ throttleMs: 16 });
+  // NORMALIZED: Use Coinbase for consistent price feed across all clients
+  // Output at 100ms intervals with smoothing applied
+  const { price, previousPrice, isConnected: priceConnected, priceDirection, activeProvider } = useSolanaPrice();
   const { tryAutoStart: tryAutoStartMusic } = useArcadeMusic();
   const { demoBalance, updateDemoBalance, updateGemsBalance, isDemoMode, isAuthenticated, gemsBalance } = useWallet();
   
@@ -242,7 +244,7 @@ export default function PredictionMarket() {
                 : '0 4px 20px rgba(0,0,0,0.3)',
               border: '2px solid rgba(255, 255, 255, 0.4)',
             }}
-          >
+        >
             <Gem 
               size={isMobile ? 18 : 22} 
               className="text-white" 
