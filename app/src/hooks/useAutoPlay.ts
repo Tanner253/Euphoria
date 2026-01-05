@@ -26,6 +26,7 @@ interface AutoPlayOptions {
   betAmount: number;
   isMobile: boolean;
   sidebarWidth: number;
+  zoomIndex: number;
   onPlaceBet: (screenX: number, screenY: number) => void;
 }
 
@@ -45,6 +46,7 @@ export function useAutoPlay({
   currentPrice,
   betAmount,
   isMobile,
+  zoomIndex,
   onPlaceBet,
 }: AutoPlayOptions): AutoPlayReturn {
   // Price history for trend analysis
@@ -109,7 +111,10 @@ export function useAutoPlay({
     if (!canvas || currentPrice === null) return null;
     
     const trend = analyzeTrend();
-    const cellSize = isMobile ? GAME_CONFIG.CELL_SIZE_MOBILE : GAME_CONFIG.CELL_SIZE;
+    // IMPORTANT: Use zoomed cell size to match game engine
+    const zoomLevel = GAME_CONFIG.ZOOM_LEVELS[zoomIndex] || 1.0;
+    const baseCellSize = isMobile ? GAME_CONFIG.CELL_SIZE_MOBILE : GAME_CONFIG.CELL_SIZE;
+    const cellSize = Math.floor(baseCellSize * zoomLevel);
     const headX = isMobile ? GAME_CONFIG.HEAD_X_MOBILE : GAME_CONFIG.HEAD_X;
     
     // Use the actual minimum bet distance from config

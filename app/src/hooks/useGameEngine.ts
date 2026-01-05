@@ -1778,7 +1778,9 @@ export function useGameEngine({
       state.offsetX += state.currentSpeed * deltaTime;
 
       const rightEdge = state.offsetX + width;
-      if (state.lastGenX < rightEdge + cellSize * 2) {
+      // Generate columns far enough ahead for betting (MIN_BET_COLUMNS_AHEAD + buffer)
+      const colBufferAhead = (isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD) + 6;
+      if (state.lastGenX < rightEdge + cellSize * colBufferAhead) {
         generateColumn(state.lastGenX + cellSize, state.priceY);
       }
 
@@ -2278,7 +2280,9 @@ export function useGameEngine({
           ctx.fillText(`-${bet.amount}`, centerX, centerY + 16);
         }
         
-        // Win zone indicator (simple cyan corners - minimal rendering cost)
+        // DEBUG: Win zone indicator (cyan corners) - commented out for production
+        // Uncomment to visualize the shrunk win zone during debugging
+        /*
         if (bet.winPriceMin !== undefined && bet.winPriceMax !== undefined && bet.basePriceAtBet !== undefined && bet.status === 'pending') {
           const winYTop = -(bet.winPriceMax - bet.basePriceAtBet) * GAME_CONFIG.PRICE_SCALE + cellSize / 2;
           const winYBottom = -(bet.winPriceMin - bet.basePriceAtBet) * GAME_CONFIG.PRICE_SCALE + cellSize / 2;
@@ -2316,6 +2320,7 @@ export function useGameEngine({
           ctx.lineTo(screenX + cellSize, winYBottom - cornerSize);
           ctx.stroke();
         }
+        */
       });
       
       // ✨ SPECIAL CELLS - Render with glowing rainbow effect

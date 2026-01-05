@@ -107,79 +107,72 @@ export default function BetControls({
   
   return (
     <div 
-      className="fixed bottom-8 z-30 slide-in-up -translate-x-1/2"
-      style={{ left: `calc(50% + ${sidebarWidth / 2}px)` }}
+      className="fixed z-30 slide-in-up"
+      style={{ left: `${sidebarWidth + 12}px`, top: '100px' }}
     >
-      <div className="bg-black/70 backdrop-blur-xl border border-cyan-500/20 rounded-2xl p-4 flex items-center justify-center gap-3 hover:border-cyan-500/40 transition-all">
-        {/* Half button */}
-        <button 
-          onClick={() => onBetAmountChange(Math.max(1, Math.floor(betAmount / 2)))}
-          className="px-2 py-1.5 rounded-lg bg-white/5 hover:bg-cyan-500/20 text-white/60 hover:text-cyan-300 transition-all border border-white/10 hover:border-cyan-500/30 text-xs font-bold active:scale-95"
-        >
-          ½
-        </button>
+      <div className="bg-black/80 backdrop-blur-xl border border-cyan-500/20 rounded-xl p-3 flex flex-col gap-2 hover:border-cyan-500/40 transition-all min-w-[120px]">
+        {/* Label */}
+        <div className="text-cyan-400/70 text-xs font-bold uppercase tracking-wider text-center">Bet Amount</div>
         
-        {/* Decrease button */}
-        <button 
-          onClick={() => onBetAmountChange(Math.max(1, betAmount - 10))}
-          className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-cyan-500/20 text-white/60 hover:text-cyan-300 transition-all border border-white/10 hover:border-cyan-500/30 active:scale-95"
-        >
-          <Minus size={14} />
-        </button>
-        
-        {/* Editable bet input with gem icon */}
-        <div className="relative flex items-center gap-1">
+        {/* Bet amount display with +/- */}
+        <div className="flex items-center justify-center gap-1">
+          <button 
+            onClick={() => onBetAmountChange(Math.max(1, betAmount - 10))}
+            className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 hover:bg-cyan-500/20 text-white/60 hover:text-cyan-300 transition-all border border-white/10 hover:border-cyan-500/30 active:scale-95"
+          >
+            <Minus size={12} />
+          </button>
           <input
             type="text"
             value={inputValue}
             onChange={handleInputChange}
             onBlur={handleInputBlur}
             onKeyDown={(e) => e.key === 'Enter' && handleInputBlur()}
-            className="w-20 bg-white/5 border border-cyan-500/30 rounded-lg py-2 px-3 text-xl font-bold text-cyan-300 text-center font-mono focus:outline-none focus:border-cyan-400 focus:shadow-lg focus:shadow-cyan-500/20 transition-all"
+            className="w-14 bg-white/5 border border-cyan-500/30 rounded-lg py-1.5 px-2 text-lg font-bold text-cyan-300 text-center font-mono focus:outline-none focus:border-cyan-400 transition-all"
           />
-          <span className="text-xl animate-bounce-subtle">💎</span>
+          <button 
+            onClick={() => onBetAmountChange(Math.min(MAX_BET, betAmount + 10))}
+            className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 hover:bg-cyan-500/20 text-white/60 hover:text-cyan-300 transition-all border border-white/10 hover:border-cyan-500/30 active:scale-95"
+          >
+            <Plus size={12} />
+          </button>
         </div>
         
-        {/* Increase button */}
-        <button 
-          onClick={() => onBetAmountChange(Math.min(MAX_BET, betAmount + 10))}
-          className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-cyan-500/20 text-white/60 hover:text-cyan-300 transition-all border border-white/10 hover:border-cyan-500/30 active:scale-95"
-        >
-          <Plus size={14} />
-        </button>
-        
-        {/* Double button */}
-        <button 
-          onClick={() => onBetAmountChange(Math.min(MAX_BET, betAmount * 2))}
-          className="px-2 py-1.5 rounded-lg bg-white/5 hover:bg-cyan-500/20 text-white/60 hover:text-cyan-300 transition-all border border-white/10 hover:border-cyan-500/30 text-xs font-bold active:scale-95"
-        >
-          2×
-        </button>
+        {/* Quick multipliers */}
+        <div className="flex justify-center gap-1">
+          <button 
+            onClick={() => onBetAmountChange(Math.max(1, Math.floor(betAmount / 2)))}
+            className="px-2 py-1 rounded bg-white/5 hover:bg-cyan-500/20 text-white/50 hover:text-cyan-300 transition-all text-xs font-bold active:scale-95"
+          >
+            ½
+          </button>
+          <button 
+            onClick={() => onBetAmountChange(Math.min(MAX_BET, betAmount * 2))}
+            className="px-2 py-1 rounded bg-white/5 hover:bg-cyan-500/20 text-white/50 hover:text-cyan-300 transition-all text-xs font-bold active:scale-95"
+          >
+            2×
+          </button>
+        </div>
         
         {/* Divider */}
-        <div className="w-px h-8 bg-cyan-500/30" />
+        <div className="w-full h-px bg-cyan-500/20" />
         
-        {/* Quick bet options */}
-        <div className="flex gap-1.5">
+        {/* Quick bet options - vertical stack */}
+        <div className="flex flex-col gap-1">
           {betOptions.map(amt => (
             <button
               key={amt}
               onClick={() => onBetAmountChange(amt)}
-              className={`px-3 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1 active:scale-95 ${
+              className={`py-1.5 rounded-lg text-sm font-bold transition-all active:scale-95 ${
                 betAmount === amt 
-                  ? 'bg-[#c8e64c] text-black shadow-lg shadow-[#c8e64c]/30 animate-pulse-glow' 
-                  : 'bg-white/5 text-white/50 hover:bg-cyan-500/20 hover:text-cyan-300 hover:border-cyan-500/30 border border-transparent'
+                  ? 'bg-[#c8e64c] text-black shadow-lg shadow-[#c8e64c]/30' 
+                  : 'bg-white/5 text-white/50 hover:bg-cyan-500/20 hover:text-cyan-300'
               }`}
             >
-              {amt}
+              {amt} 💎
             </button>
           ))}
         </div>
-      </div>
-      
-      {/* Helper text with animation */}
-      <div className="text-center mt-2 text-cyan-400/50 text-xs">
-        Click <span className="text-cyan-400 animate-pulse">glowing cells</span> to place bets • Drag to place multiple • Max 100💎
       </div>
     </div>
   );

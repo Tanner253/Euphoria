@@ -130,6 +130,7 @@ export default function PredictionMarket() {
     betAmount,
     isMobile,
     sidebarWidth,
+    zoomIndex,
     onPlaceBet: placeBetAt,
   });
 
