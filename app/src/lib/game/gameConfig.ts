@@ -1,19 +1,16 @@
 /**
  * Client-side VISUAL configuration ONLY
  * 
- * IMPORTANT: Game mechanics config (cell sizes, zoom levels, betting rules, etc.)
- * come from the server via useGameSocket().serverConfig
+ * ALL game mechanics config comes from the server via Socket.io.
+ * The client MUST wait for serverConfig before rendering the game.
  * 
  * This file ONLY contains:
- * - Colors and visual effects
- * - Initial/demo balance (before auth)
- * - Things that truly don't affect game logic
+ * - Colors and visual effects (pure rendering, no game logic)
+ * - Demo mode initial balance
  */
 
-export const GAME_CONFIG = {
-  // === VISUAL ONLY - These do not affect game logic ===
-  
-  // Colors
+export const VISUAL_CONFIG = {
+  // Colors - purely visual, no game logic impact
   WIN_COLOR: '#c8e64c',
   LOSS_COLOR: '#ef4444',
   BG_COLOR: '#0a0014',
@@ -26,16 +23,14 @@ export const GAME_CONFIG = {
   INITIAL_BALANCE: 1000,
 } as const;
 
+// Legacy alias for backwards compatibility during migration
+export const GAME_CONFIG = VISUAL_CONFIG;
+
 /**
  * Calculate multiplier based on distance from current price and risk level
  * 
- * NOTE: This is computed by the server for authoritative bets.
- * Client uses this for preview/display only until server confirms.
- * 
- * Risk level starting multipliers (for bets on the price line):
- * - Low Risk (2.0x zoom): starts at 1.15x
- * - Medium (1.0x zoom): starts at 1.12x  
- * - High Risk (0.75x zoom): starts at 1.50x
+ * NOTE: Server is authoritative for actual bet multipliers.
+ * Client uses this for preview/display only.
  */
 export function calculateMultiplier(yIndex: number, currentPriceIndex: number, zoomLevel: number = 1.0): string {
   const dist = Math.abs(yIndex - currentPriceIndex);
@@ -66,54 +61,52 @@ export function calculateMultiplier(yIndex: number, currentPriceIndex: number, z
 export type VolatilityLevel = 'active' | 'low' | 'idle';
 
 /**
- * Default server config values used as fallback before server connection
- * These MUST match server/src/config.ts SERVER_CONFIG
+ * Server config type - received from server on socket connect
+ * Client MUST wait for this before rendering the game
  */
-export const DEFAULT_SERVER_CONFIG = {
+export interface ServerConfig {
   // Grid
-  cellSize: 50,
-  cellSizeMobile: 40,
+  cellSize: number;
+  cellSizeMobile: number;
   
   // Zoom
-  zoomLevels: [2.0, 1.0, 0.75] as readonly number[],
-  zoomLabels: ['Low Risk', 'Medium', 'High Risk'] as readonly string[],
+  zoomLevels: readonly number[];
+  zoomLabels: readonly string[];
   
   // Grid speed
-  gridSpeedActive: 1,
-  gridSpeedLow: 0.25,
-  gridSpeedIdle: 0.05,
-  gridSpeedMin: 0.03,
+  gridSpeedActive: number;
+  gridSpeedLow: number;
+  gridSpeedIdle: number;
+  gridSpeedMin: number;
   
   // Price
-  priceScale: 8000,
-  priceSmoothing: 0.15,
-  flatlineThreshold: 0.003,
-  flatlineWindow: 60,
+  priceScale: number;
+  priceSmoothing: number;
+  flatlineThreshold: number;
+  flatlineWindow: number;
   
   // Betting rules
-  minBetColumnsAhead: 8,
-  minBetColumnsAheadMobile: 5,
-  betAmountOptions: [10, 25, 50, 100] as readonly number[],
-  betAmountOptionsMobile: [1, 5, 10] as readonly number[],
-  maxBetAmount: 100,
-  minBetAmount: 1,
+  minBetColumnsAhead: number;
+  minBetColumnsAheadMobile: number;
+  betAmountOptions: readonly number[];
+  betAmountOptionsMobile: readonly number[];
+  maxBetAmount: number;
+  minBetAmount: number;
   
   // House edge
-  winZoneMargin: 0.15,
+  winZoneMargin: number;
   
   // Layout
-  headX: 450,
-  headXMobile: 60,
-  verticalCells: 60,
-  priceAxisWidth: 80,
-  priceAxisWidthMobile: 40,
-  sidebarWidth: 56,
-  sidebarWidthMobile: 44,
-  mobileCameraScale: 0.55,
+  headX: number;
+  headXMobile: number;
+  verticalCells: number;
+  priceAxisWidth: number;
+  priceAxisWidthMobile: number;
+  sidebarWidth: number;
+  sidebarWidthMobile: number;
+  mobileCameraScale: number;
   
   // Server
-  tickRate: 60,
-} as const;
-
-export type ServerConfig = typeof DEFAULT_SERVER_CONFIG;
+  tickRate: number;
+}
 

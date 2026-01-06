@@ -11,7 +11,7 @@
 
 import { useRef, useCallback, useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { GAME_CONFIG, DEFAULT_SERVER_CONFIG, calculateMultiplier } from '@/lib/game/gameConfig';
+import { GAME_CONFIG, calculateMultiplier } from '@/lib/game/gameConfig';
 import type { ServerConfig } from '@/lib/game/gameConfig';
 import { getGameSounds } from '@/lib/audio/GameSounds';
 // NOTE: All bet operations now go through Socket.io - no REST API
@@ -866,6 +866,7 @@ interface UseGameEngineOptions {
 
 interface UseGameEngineReturn {
   canvasRef: React.RefObject<HTMLCanvasElement>;
+  configLoaded: boolean; // True when server config received - game ready to render
   volatilityLevel: VolatilityLevel;
   handlePointerDown: (e: React.PointerEvent<HTMLCanvasElement>) => void;
   handlePointerMove: (e: React.PointerEvent<HTMLCanvasElement>) => void;
@@ -879,6 +880,7 @@ interface UseGameEngineReturn {
   cycleZoom: () => void;
   zoomLocked: boolean; // True when zoom is disabled due to active bets
   placeBetAt: (screenX: number, screenY: number) => Promise<boolean>; // For auto-play
+  serverConfig: ServerConfig | null; // Expose server config to parent
 }
 
 export function useGameEngine({
@@ -897,15 +899,16 @@ export function useGameEngine({
   onError,
 }: UseGameEngineOptions): UseGameEngineReturn {
   // Server config - SINGLE SOURCE OF TRUTH for game settings
-  // Uses DEFAULT_SERVER_CONFIG until server sends actual config via socket
-  const serverConfigRef = useRef<ServerConfig>(DEFAULT_SERVER_CONFIG);
+  // Starts as null - game MUST wait for server config before rendering
+  const serverConfigRef = useRef<ServerConfig | null>(null);
+  const [configLoaded, setConfigLoaded] = useState(false);
   
   const [volatilityLevel, setVolatilityLevel] = useState<VolatilityLevel>('active');
   const [isDragging, setIsDragging] = useState(false);
   const [pendingBetsCount, setPendingBetsCount] = useState(0);
   const [zoomIndex, setZoomIndex] = useState(0);
-  // Use server config zoom levels
-  const zoomLevel = serverConfigRef.current.zoomLevels[zoomIndex] ?? DEFAULT_SERVER_CONFIG.zoomLevels[0];
+  // Use server config zoom levels (default to 1.0 if config not yet loaded)
+  const zoomLevel = serverConfigRef.current?.zoomLevels[zoomIndex] ?? 1.0;
   
   // MOBILE: Force low risk mode (zoom index 0) - no medium/high risk on mobile
   useEffect(() => {
@@ -951,7 +954,7 @@ export function useGameEngine({
     cameraY: 0,
     initialized: false,
     recentPrices: [],
-    currentSpeed: DEFAULT_SERVER_CONFIG.gridSpeedActive,
+    currentSpeed: 1, // Will be updated when server config arrives
     lastPrice: null,
     particles: [],
     specialCells: [],
@@ -965,8 +968,9 @@ export function useGameEngine({
   const heatmapRef = useRef<Map<string, HeatmapCell>>(new Map());
   const serverBetsRef = useRef<ServerBetData[]>([]);
   
-  // Helper to get server config values
-  const cfg = serverConfigRef.current;
+  // Helper to get server config - returns null if not yet received
+  // All game logic MUST check this before using
+  const getConfig = useCallback(() => serverConfigRef.current, []);
   
   // Server state for interpolation - client smoothly moves towards these targets
   const serverStateRef = useRef<{
@@ -1017,9 +1021,11 @@ export function useGameEngine({
     });
     
     // Receive server config (SINGLE SOURCE OF TRUTH)
+    // Game CANNOT function without this - must wait
     socket.on('serverConfig', (config: ServerConfig) => {
-      console.log('[GameEngine] Received server config');
+      console.log('[GameEngine] Received server config - game ready');
       serverConfigRef.current = config;
+      setConfigLoaded(true);
     });
     
     // ========== RECEIVE AUTHORITATIVE GAME STATE FROM SERVER ==========
@@ -1255,10 +1261,11 @@ export function useGameEngine({
     prevZoomIndexRef.current = zoomIndex;
     
     const state = stateRef.current;
-    if (!state.initialized) return;
+    const cfg = serverConfigRef.current;
+    if (!state.initialized || !cfg) return; // Wait for config
     
-    const cellSize = Math.floor((isMobile ? serverConfigRef.current.cellSizeMobile : serverConfigRef.current.cellSize) * zoomLevel);
-    const headX = isMobile ? serverConfigRef.current.headXMobile : serverConfigRef.current.headX;
+    const cellSize = Math.floor((isMobile ? cfg.cellSizeMobile : cfg.cellSize) * zoomLevel);
+    const headX = isMobile ? cfg.headXMobile : cfg.headX;
     
     // Clear columns and reset grid
     state.columns = [];
@@ -1268,13 +1275,13 @@ export function useGameEngine({
     state.targetPriceY = cellSize / 2;
     state.priceHistory = [{ x: headX, y: cellSize / 2 }];
     // Use virtual height for camera (accounts for mobile zoom-out)
-    const initCameraScale = isMobile ? serverConfigRef.current.mobileCameraScale : 1;
+    const initCameraScale = isMobile ? cfg.mobileCameraScale : 1;
     state.cameraY = (window.innerHeight / initCameraScale) / 2;
     
     // Regenerate columns with proper cells using generateColumn pattern
     // Large buffer for high volatility movement
     const priceY = cellSize / 2;
-    const zoomBufferCols = (isMobile ? serverConfigRef.current.minBetColumnsAheadMobile : serverConfigRef.current.minBetColumnsAhead) + 30;
+    const zoomBufferCols = (isMobile ? cfg.minBetColumnsAheadMobile : cfg.minBetColumnsAhead) + 30;
     for (let x = 0; x < window.innerWidth + cellSize * zoomBufferCols; x += cellSize) {
       const centerYIndex = Math.floor(priceY / cellSize);
       const newCol: Column = {
@@ -1301,22 +1308,40 @@ export function useGameEngine({
   }, [zoomIndex, isMobile, zoomLevel]);
 
   // Get responsive config values with zoom applied
+  // These return sensible defaults if config not yet loaded
   const getCellSize = useCallback(() => {
-    const baseSize = isMobile ? serverConfigRef.current.cellSizeMobile : serverConfigRef.current.cellSize;
+    const cfg = serverConfigRef.current;
+    if (!cfg) return 50; // Default until config loads
+    const baseSize = isMobile ? cfg.cellSizeMobile : cfg.cellSize;
     return Math.floor(baseSize * zoomLevel);
   }, [isMobile, zoomLevel]);
-  const getHeadX = useCallback(() => isMobile ? serverConfigRef.current.headXMobile : serverConfigRef.current.headX, [isMobile]);
+  const getHeadX = useCallback(() => {
+    const cfg = serverConfigRef.current;
+    if (!cfg) return isMobile ? 60 : 450;
+    return isMobile ? cfg.headXMobile : cfg.headX;
+  }, [isMobile]);
   // Price axis hidden on mobile for more game space
-  const getPriceAxisWidth = useCallback(() => isMobile ? 0 : serverConfigRef.current.priceAxisWidth, [isMobile]);
-  const getMinBetColumnsAhead = useCallback(() => isMobile ? serverConfigRef.current.minBetColumnsAheadMobile : serverConfigRef.current.minBetColumnsAhead, [isMobile]);
+  const getPriceAxisWidth = useCallback(() => {
+    const cfg = serverConfigRef.current;
+    if (!cfg) return isMobile ? 0 : 80;
+    return isMobile ? 0 : cfg.priceAxisWidth;
+  }, [isMobile]);
+  const getMinBetColumnsAhead = useCallback(() => {
+    const cfg = serverConfigRef.current;
+    if (!cfg) return isMobile ? 5 : 8;
+    return isMobile ? cfg.minBetColumnsAheadMobile : cfg.minBetColumnsAhead;
+  }, [isMobile]);
 
   const generateColumn = useCallback((xPosition: number, currentPriceY: number) => {
     const state = stateRef.current;
+    const cfg = serverConfigRef.current;
+    if (!cfg) return; // Config not loaded yet
+    
     const cellSize = getCellSize();
     const currentPriceIndex = Math.floor((currentPriceY + cellSize / 2) / cellSize);
     
     const cells: Record<number, { id: string; multiplier: string }> = {};
-    for (let i = -serverConfigRef.current.verticalCells; i <= serverConfigRef.current.verticalCells; i++) {
+    for (let i = -cfg.verticalCells; i <= cfg.verticalCells; i++) {
       const yIndex = currentPriceIndex + i;
       cells[yIndex] = {
         id: Math.random().toString(36).substr(2, 9),
@@ -1372,6 +1397,9 @@ export function useGameEngine({
   }, [isAutoPlaying]);
 
   const placeBetAt = useCallback(async (screenX: number, screenY: number, allowDuplicate = false) => {
+    const cfg = serverConfigRef.current;
+    if (!cfg) return false; // Config not loaded yet
+    
     const currentBalance = balanceRef.current;
     const currentBetAmount = betAmountRef.current;
     const cellSize = getCellSize();
@@ -1385,7 +1413,7 @@ export function useGameEngine({
       return false;
     }
     // Use canvas width (already accounts for sidebar) and scale it for mobile camera zoom
-    const cameraScale = isMobile ? serverConfigRef.current.mobileCameraScale : 1;
+    const cameraScale = isMobile ? cfg.mobileCameraScale : 1;
     const virtualWidth = (canvasRef.current?.width ?? window.innerWidth) / cameraScale;
     if (screenX > virtualWidth - priceAxisWidth) return false;
     
@@ -1460,8 +1488,8 @@ export function useGameEngine({
         const basePrice = basePriceRef.current ?? 0;
         const cellYTop = yIndex * cellSize;
         const cellYBottom = (yIndex + 1) * cellSize;
-        const winPriceMax = basePrice + (cellSize / 2 - cellYTop) / serverConfigRef.current.priceScale;
-        const winPriceMin = basePrice + (cellSize / 2 - cellYBottom) / serverConfigRef.current.priceScale;
+        const winPriceMax = basePrice + (cellSize / 2 - cellYTop) / cfg.priceScale;
+        const winPriceMin = basePrice + (cellSize / 2 - cellYBottom) / cfg.priceScale;
         
         // Create bet - demo mode goes straight to pending, authenticated waits for server
         // Store basePriceAtBet AND win boundaries for immediate visualization
@@ -1596,10 +1624,14 @@ export function useGameEngine({
     }
   }, []);
 
-  // Main animation loop
+  // Main animation loop - ONLY runs after server config is received
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    // MUST have server config before rendering - no fallbacks
+    if (!canvas || !serverConfigRef.current) return;
+    
+    // Create local reference to config for this effect
+    const config = serverConfigRef.current;
 
     const cellSize = getCellSize();
     const headX = getHeadX();
@@ -1639,7 +1671,7 @@ export function useGameEngine({
           
           // DEMO MODE ONLY: Simple cell-based resolution (matches server logic)
           // Check if current priceY is within the bet's cell (with win zone margin)
-          const margin = serverConfigRef.current.winZoneMargin;
+          const margin = config.winZoneMargin;
           const effectiveMin = bet.yIndex + margin;
           const effectiveMax = bet.yIndex + 1 - margin;
           const priceInCell = currentPriceY / cellSize;
@@ -1660,7 +1692,7 @@ export function useGameEngine({
             }
             onTotalWonChange(prev => prev + winAmount - bet.amount);
             
-            const cameraScale = isMobile ? serverConfigRef.current.mobileCameraScale : 1;
+            const cameraScale = isMobile ? config.mobileCameraScale : 1;
             const screenX = (col.x - state.offsetX + cellSize / 2) * cameraScale;
             const screenY = (bet.yIndex * cellSize + state.cameraY) * cameraScale;
             
@@ -1708,7 +1740,7 @@ export function useGameEngine({
         
         // priceY: smooth interpolation for nice price line movement
         const priceDiff = serverState.targetPriceY - state.priceY;
-        const priceSmoothing = 1 - Math.pow(1 - serverConfigRef.current.priceSmoothing, deltaTime);
+        const priceSmoothing = 1 - Math.pow(1 - config.priceSmoothing, deltaTime);
         state.priceY += priceDiff * priceSmoothing;
         state.targetPriceY = serverState.targetPriceY;
       } else {
@@ -1721,7 +1753,7 @@ export function useGameEngine({
 
       // Generate columns as needed (client-side for rendering)
       const rightEdge = state.offsetX + width;
-      const colBufferAhead = (isMobile ? serverConfigRef.current.minBetColumnsAheadMobile : serverConfigRef.current.minBetColumnsAhead) + 25;
+      const colBufferAhead = (isMobile ? config.minBetColumnsAheadMobile : config.minBetColumnsAhead) + 25;
       let columnsGenerated = 0;
       while (state.lastGenX < rightEdge + cellSize * colBufferAhead && columnsGenerated < 50) {
         generateColumn(state.lastGenX + cellSize, state.priceY);
@@ -1736,7 +1768,7 @@ export function useGameEngine({
       // Server's priceHistory is authoritative and already populated via gameState socket
 
       // Use virtual height for camera centering (accounts for mobile zoom-out)
-      const cameraScale = isMobile ? serverConfigRef.current.mobileCameraScale : 1;
+      const cameraScale = isMobile ? config.mobileCameraScale : 1;
       const virtualHeight = canvas.height / cameraScale;
       const targetCameraY = -state.priceY + virtualHeight / 2;
       // TIME-NORMALIZED: Camera smoothing scaled by deltaTime
@@ -1920,7 +1952,7 @@ export function useGameEngine({
       const currentPrice = priceRef.current ?? basePriceRef.current ?? 0;
       
       // Mobile camera scale - zooms out the view to show more grid
-      const cameraScale = isMobile ? serverConfigRef.current.mobileCameraScale : 1;
+      const cameraScale = isMobile ? config.mobileCameraScale : 1;
       // Virtual dimensions (what we render to, scaled up so it fills physical canvas when scaled down)
       const width = physicalWidth / cameraScale;
       const height = physicalHeight / cameraScale;
@@ -1970,7 +2002,7 @@ export function useGameEngine({
 
         const startY = -state.cameraY - cellSize * 3;
         const endY = -state.cameraY + height + cellSize * 3;
-        const minBetColumns = isMobile ? serverConfigRef.current.minBetColumnsAheadMobile : serverConfigRef.current.minBetColumnsAhead;
+        const minBetColumns = isMobile ? config.minBetColumnsAheadMobile : config.minBetColumnsAhead;
         const isBettable = col.x > currentHeadX + cellSize * minBetColumns;
 
         // Smooth animation timing
@@ -2230,8 +2262,8 @@ export function useGameEngine({
         // Uncomment to visualize the shrunk win zone during debugging
         /*
         if (bet.winPriceMin !== undefined && bet.winPriceMax !== undefined && bet.basePriceAtBet !== undefined && bet.status === 'pending') {
-          const winYTop = -(bet.winPriceMax - bet.basePriceAtBet) * serverConfigRef.current.priceScale + cellSize / 2;
-          const winYBottom = -(bet.winPriceMin - bet.basePriceAtBet) * serverConfigRef.current.priceScale + cellSize / 2;
+          const winYTop = -(bet.winPriceMax - bet.basePriceAtBet) * config.priceScale + cellSize / 2;
+          const winYBottom = -(bet.winPriceMin - bet.basePriceAtBet) * config.priceScale + cellSize / 2;
           
           // Draw simple corner markers (fast)
           ctx.strokeStyle = '#00ffff';
@@ -2505,7 +2537,7 @@ export function useGameEngine({
         const labelStep = 5;
         
         for (let i = -40; i <= 40; i++) {
-          const pixelOffset = i * (priceStep * serverConfigRef.current.priceScale);
+          const pixelOffset = i * (priceStep * config.priceScale);
           const screenY = centerScreenY + pixelOffset;
           
           if (screenY < 0 || screenY > height) continue;
@@ -2534,7 +2566,7 @@ export function useGameEngine({
       
       // Speed bar - full width on mobile since no price axis
       const speedBarWidth = isMobile ? width : width - priceAxisWidth;
-      const speedRatio = state.currentSpeed / serverConfigRef.current.gridSpeedActive;
+      const speedRatio = state.currentSpeed / config.gridSpeedActive;
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
       ctx.fillRect(0, height - 4, speedBarWidth, 4);
       
@@ -2561,12 +2593,12 @@ export function useGameEngine({
       state.cameraY = window.innerHeight / 2;
       state.initialized = true;
       state.recentPrices = [];
-      state.currentSpeed = serverConfigRef.current.gridSpeedActive;
+      state.currentSpeed = config.gridSpeedActive;
       state.lastPrice = null;
       
       // Generate enough columns for the visible area plus large buffer for high volatility
       // Account for zoom level - smaller cells = more columns needed
-      const minBetCols = isMobile ? serverConfigRef.current.minBetColumnsAheadMobile : serverConfigRef.current.minBetColumnsAhead;
+      const minBetCols = isMobile ? config.minBetColumnsAheadMobile : config.minBetColumnsAhead;
       const neededWidth = window.innerWidth + cellSize * (minBetCols + 30);
       for (let x = 0; x < neededWidth; x += cellSize) {
         generateColumn(x, cellSize / 2);
@@ -2639,29 +2671,35 @@ export function useGameEngine({
   }, [sidebarWidth, getCellSize, generateColumn]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    const cfg = serverConfigRef.current;
+    if (!cfg) return; // Wait for config
+    
     setIsDragging(true);
     isDraggingRef.current = true;
     dragBetQueueRef.current = []; // Clear any stale queue
     lastBetCellRef.current = null;
     const rect = canvasRef.current!.getBoundingClientRect();
     // Scale input coordinates for mobile camera zoom-out
-    const cameraScale = isMobile ? serverConfigRef.current.mobileCameraScale : 1;
+    const cameraScale = isMobile ? cfg.mobileCameraScale : 1;
     const screenX = (e.clientX - rect.left) / cameraScale;
     const screenY = (e.clientY - rect.top) / cameraScale;
     placeBetAt(screenX, screenY, true);
   }, [placeBetAt, isMobile]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    const cfg = serverConfigRef.current;
+    if (!cfg) return; // Wait for config
+    
     const rect = canvasRef.current!.getBoundingClientRect();
     // Scale input coordinates for mobile camera zoom-out
-    const cameraScale = isMobile ? serverConfigRef.current.mobileCameraScale : 1;
+    const cameraScale = isMobile ? cfg.mobileCameraScale : 1;
     const screenX = (e.clientX - rect.left) / cameraScale;
     const screenY = (e.clientY - rect.top) / cameraScale;
     
     // Track hover position for effects
     const state = stateRef.current;
-    const cellSize = Math.floor((isMobile ? serverConfigRef.current.cellSizeMobile : serverConfigRef.current.cellSize) * zoomLevel);
-    const headX = isMobile ? serverConfigRef.current.headXMobile : serverConfigRef.current.headX;
+    const cellSize = Math.floor((isMobile ? cfg.cellSizeMobile : cfg.cellSize) * zoomLevel);
+    const headX = isMobile ? cfg.headXMobile : cfg.headX;
     
     const worldX = state.offsetX + screenX;
     const worldY = screenY - state.cameraY;
@@ -2674,7 +2712,7 @@ export function useGameEngine({
     
     if (clickedCol) {
       const yIndex = Math.floor(worldY / cellSize);
-      const minBetColumns = isMobile ? serverConfigRef.current.minBetColumnsAheadMobile : serverConfigRef.current.minBetColumnsAhead;
+      const minBetColumns = isMobile ? cfg.minBetColumnsAheadMobile : cfg.minBetColumnsAhead;
       const isBettable = clickedCol.x > state.offsetX + headX + cellSize * minBetColumns;
       
       if (isBettable) {
@@ -2820,11 +2858,13 @@ export function useGameEngine({
     if (activeBets.length > 0) {
       return; // Zoom locked while bets are active
     }
-    setZoomIndex(prev => (prev + 1) % serverConfigRef.current.zoomLevels.length);
+    if (!serverConfigRef.current) return; // Wait for server config
+    setZoomIndex(prev => (prev + 1) % serverConfigRef.current!.zoomLevels.length);
   }, [isMobile]);
 
   return {
     canvasRef,
+    configLoaded,
     volatilityLevel,
     handlePointerDown,
     handlePointerMove,
@@ -2838,6 +2878,7 @@ export function useGameEngine({
     cycleZoom,
     zoomLocked: hasActiveBets,
     placeBetAt,
+    serverConfig: serverConfigRef.current,
   };
 }
 

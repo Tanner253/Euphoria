@@ -11,7 +11,7 @@ import { useWallet } from '@/contexts/WalletContext';
 import { useGameEngine, WinInfo } from '@/hooks/useGameEngine';
 import { useArcadeMusic } from '@/hooks/useArcadeMusic';
 import { useAutoPlay } from '@/hooks/useAutoPlay';
-import { GAME_CONFIG, DEFAULT_SERVER_CONFIG } from '@/lib/game/gameConfig';
+import { GAME_CONFIG } from '@/lib/game/gameConfig';
 import { 
   BetControls, 
   GemsModal,
@@ -95,9 +95,11 @@ export default function PredictionMarket() {
   // Sidebar width for canvas offset - no offset on mobile (floating controls)
   const sidebarWidth = isMobile ? 0 : 56;
 
-  // Game engine hook
+  // Game engine hook - receives all config from server
   const {
     canvasRef,
+    configLoaded,
+    serverConfig,
     volatilityLevel,
     handlePointerDown,
     handlePointerMove,
@@ -126,7 +128,7 @@ export default function PredictionMarket() {
   
   // Auto-play for development testing (only available in NODE_ENV=development)
   const { toggleAutoPlay, canAutoPlay } = useAutoPlay({
-    isEnabled: !showSplash && !showWalletAuth && !showRoadmap && !showGemsModal,
+    isEnabled: !showSplash && !showWalletAuth && !showRoadmap && !showGemsModal && configLoaded,
     isAutoPlaying,
     setIsAutoPlaying,
     canvasRef,
@@ -136,6 +138,7 @@ export default function PredictionMarket() {
     isMobile,
     sidebarWidth,
     zoomIndex,
+    serverConfig,  // From server - single source of truth
     onPlaceBet: placeBetAt,
   });
 
@@ -155,10 +158,11 @@ export default function PredictionMarket() {
     }
   }, [price, updatePrice]);
 
-  // Get bet options based on device (using server config defaults until socket connected)
-  const getBetOptions = useCallback(() => 
-    [...(isMobile ? DEFAULT_SERVER_CONFIG.betAmountOptionsMobile : DEFAULT_SERVER_CONFIG.betAmountOptions)], 
-  [isMobile]);
+  // Get bet options from server config - only available when connected
+  const getBetOptions = useCallback(() => {
+    if (!serverConfig) return [1, 5, 10]; // Minimal fallback only for initial render
+    return [...(isMobile ? serverConfig.betAmountOptionsMobile : serverConfig.betAmountOptions)];
+  }, [isMobile, serverConfig]);
 
   // Canvas event handlers that check for open modals
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {

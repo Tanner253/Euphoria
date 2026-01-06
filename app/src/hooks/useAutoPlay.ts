@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react';
-import { DEFAULT_SERVER_CONFIG } from '@/lib/game/gameConfig';
+import type { ServerConfig } from '@/lib/game/gameConfig';
 
 interface PricePoint {
   price: number;
@@ -27,6 +27,7 @@ interface AutoPlayOptions {
   isMobile: boolean;
   sidebarWidth: number;
   zoomIndex: number;
+  serverConfig: ServerConfig | null;  // From server - NO FALLBACK
   onPlaceBet: (screenX: number, screenY: number) => void;
 }
 
@@ -47,6 +48,7 @@ export function useAutoPlay({
   betAmount,
   isMobile,
   zoomIndex,
+  serverConfig,
   onPlaceBet,
 }: AutoPlayOptions): AutoPlayReturn {
   // Price history for trend analysis
@@ -108,24 +110,23 @@ export function useAutoPlay({
   // Calculate where to place bet based on trend
   const calculateBetPosition = useCallback((): { screenX: number; screenY: number } | null => {
     const canvas = canvasRef.current;
-    if (!canvas || currentPrice === null) return null;
+    // MUST have server config - no fallbacks
+    if (!canvas || currentPrice === null || !serverConfig) return null;
     
     const trend = analyzeTrend();
-    // IMPORTANT: Use zoomed cell size to match game engine
-    // TODO: Pass server config via props when socket hook is integrated
-    const cfg = DEFAULT_SERVER_CONFIG;
-    const zoomLevel = cfg.zoomLevels[zoomIndex] || 1.0;
-    const baseCellSize = isMobile ? cfg.cellSizeMobile : cfg.cellSize;
+    // Use server config values - single source of truth
+    const zoomLevel = serverConfig.zoomLevels[zoomIndex] || 1.0;
+    const baseCellSize = isMobile ? serverConfig.cellSizeMobile : serverConfig.cellSize;
     const cellSize = Math.floor(baseCellSize * zoomLevel);
-    const headX = isMobile ? cfg.headXMobile : cfg.headX;
+    const headX = isMobile ? serverConfig.headXMobile : serverConfig.headX;
     
     // Use the actual minimum bet distance from config
     const minBetColumnsAhead = isMobile 
-      ? cfg.minBetColumnsAheadMobile 
-      : cfg.minBetColumnsAhead;
+      ? serverConfig.minBetColumnsAheadMobile 
+      : serverConfig.minBetColumnsAhead;
     
     // Virtual dimensions (what the game renders to after cameraScale is applied)
-    const cameraScale = isMobile ? cfg.mobileCameraScale : 1;
+    const cameraScale = isMobile ? serverConfig.mobileCameraScale : 1;
     const virtualWidth = canvas.width / cameraScale;
     const virtualHeight = canvas.height / cameraScale;
     
@@ -172,7 +173,7 @@ export function useAutoPlay({
       screenX: clampedVirtualX, 
       screenY: clampedVirtualY 
     };
-  }, [canvasRef, currentPrice, isMobile, zoomIndex, analyzeTrend]);
+  }, [canvasRef, currentPrice, isMobile, zoomIndex, serverConfig, analyzeTrend]);
   
   // Auto-play loop - INFINITE GEMS mode (no balance check needed)
   useEffect(() => {
