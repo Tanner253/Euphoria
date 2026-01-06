@@ -15,7 +15,9 @@ import { GAME_CONFIG } from '@/lib/game/gameConfig';
 import { 
   BetControls, 
   GemsModal,
+  GlobalChat,
   LeftSidebar,
+  LiveLeaderboard,
   RoadmapModal, 
   SplashScreen 
 } from '@/components/game';
@@ -28,7 +30,7 @@ export default function PredictionMarket() {
   // Output at 100ms intervals with smoothing applied
   const { price, previousPrice, isConnected: priceConnected, priceDirection, activeProvider } = useSolanaPrice();
   const { tryAutoStart: tryAutoStartMusic } = useArcadeMusic();
-  const { demoBalance, updateDemoBalance, updateGemsBalance, isDemoMode, isAuthenticated, gemsBalance } = useWallet();
+  const { demoBalance, updateDemoBalance, updateGemsBalance, isDemoMode, isAuthenticated, gemsBalance, walletAddress } = useWallet();
   
   // UI state
   const [betAmount, setBetAmount] = useState(1);
@@ -39,6 +41,8 @@ export default function PredictionMarket() {
   const [displayPrice, setDisplayPrice] = useState<number | null>(null);
   const [showRoadmap, setShowRoadmap] = useState(false);
   const [showGemsModal, setShowGemsModal] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [showWalletAuth, setShowWalletAuth] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -99,7 +103,7 @@ export default function PredictionMarket() {
     handlePointerMove,
     handlePointerUp,
     handlePointerLeave,
-    isDragging,
+    isDragging: _isDragging,
     updatePrice,
     zoomIndex,
     cycleZoom,
@@ -111,6 +115,7 @@ export default function PredictionMarket() {
     betAmount,
     sessionId: 'game-session',
     isAuthenticated,
+    walletAddress,
     isAutoPlaying,
     sidebarWidth,
     onBalanceChange: setBalance,
@@ -183,6 +188,8 @@ export default function PredictionMarket() {
         onConnectWallet={() => setShowWalletAuth(true)}
         onCycleZoom={cycleZoom}
         onShowGemsModal={() => setShowGemsModal(true)}
+        onShowLeaderboard={() => setShowLeaderboard(true)}
+        onShowChat={() => setShowChat(true)}
         zoomIndex={zoomIndex}
         zoomLocked={zoomLocked}
         isMobile={isMobile}
@@ -314,6 +321,12 @@ export default function PredictionMarket() {
           <span>{isAutoPlaying ? 'AUTO: ON' : 'AUTO: OFF'}</span>
         </button>
       )}
+      
+      {/* Live Leaderboard Modal */}
+      <LiveLeaderboard 
+        isOpen={showLeaderboard} 
+        onClose={() => setShowLeaderboard(false)} 
+      />
 
       {/* Roadmap Modal */}
       <RoadmapModal 
@@ -361,6 +374,13 @@ export default function PredictionMarket() {
           </div>
         </div>
       )}
+      
+      {/* Global Chat */}
+      <GlobalChat
+        walletAddress={walletAddress}
+        isOpen={showChat}
+        onClose={() => setShowChat(false)}
+      />
     </div>
   );
 }

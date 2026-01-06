@@ -5,13 +5,84 @@
  * 
  * SERVER-AUTHORITATIVE: All bet placement and resolution goes through server APIs
  * The client is only responsible for rendering - never trusted for balance/outcomes
+ * 
+ * SOCKET INTEGRATION: Receives heatmap data from server to show other players' bets
  */
 
 import { useRef, useCallback, useEffect, useState } from 'react';
+import { io, Socket } from 'socket.io-client';
 import { GAME_CONFIG, calculateMultiplier } from '@/lib/game/gameConfig';
 import { getGameSounds } from '@/lib/audio/GameSounds';
 import { gameAPI } from '@/lib/services/GameAPI';
 import type { Bet, Column, GameState, VolatilityLevel, Particle, SpecialCell } from '@/lib/game/types';
+
+// ========== HEATMAP TYPES AND HELPERS ==========
+
+interface HeatmapCell {
+  colId: string;
+  yIndex: number;
+  betCount: number;
+  totalWagered: number;
+  heat: number;  // 0-1 normalized
+}
+
+interface ServerBetData {
+  id: string;
+  colId: string;
+  yIndex: number;
+  walletAddress: string;
+  wager: number;
+  status: string;
+}
+
+/**
+ * Get thermal color for heatmap based on heat intensity
+ * @param heat - 0 to 1 normalized heat value
+ * @returns CSS color string
+ */
+function getHeatColor(heat: number): string {
+  if (heat <= 0) return 'transparent';
+  
+  // Thermal gradient: blue (cold) -> cyan -> green -> yellow -> orange -> red (hot)
+  const colors = [
+    { pos: 0, r: 0, g: 100, b: 255 },     // Blue (low)
+    { pos: 0.25, r: 0, g: 200, b: 200 },  // Cyan
+    { pos: 0.5, r: 0, g: 255, b: 100 },   // Green
+    { pos: 0.75, r: 255, g: 200, b: 0 },  // Yellow-Orange
+    { pos: 1, r: 255, g: 50, b: 50 },     // Red (hot)
+  ];
+  
+  // Clamp heat
+  const h = Math.min(Math.max(heat, 0), 1);
+  
+  // Find the two colors to interpolate between
+  let lower = colors[0];
+  let upper = colors[colors.length - 1];
+  
+  for (let i = 0; i < colors.length - 1; i++) {
+    if (h >= colors[i].pos && h <= colors[i + 1].pos) {
+      lower = colors[i];
+      upper = colors[i + 1];
+      break;
+    }
+  }
+  
+  // Interpolate
+  const range = upper.pos - lower.pos;
+  const factor = range === 0 ? 0 : (h - lower.pos) / range;
+  
+  const r = Math.round(lower.r + (upper.r - lower.r) * factor);
+  const g = Math.round(lower.g + (upper.g - lower.g) * factor);
+  const b = Math.round(lower.b + (upper.b - lower.b) * factor);
+  
+  // Alpha based on heat intensity (more visible when hotter)
+  const alpha = 0.15 + heat * 0.4;
+  
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Socket URL for game server
+const GAME_SERVER_URL = process.env.NEXT_PUBLIC_GAME_SERVER_URL || 'http://localhost:3002';
 
 // ========== PARTICLE SYSTEM HELPERS ==========
 
@@ -44,7 +115,8 @@ function createParticle(
   };
 }
 
-function emitBetPlacedParticles(x: number, y: number): Particle[] {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _emitBetPlacedParticles(x: number, y: number): Particle[] {
   const particles: Particle[] = [];
   const colors = ['#c8e64c', '#e8f76c', '#98b62c', '#ffffff'];
   
@@ -65,7 +137,8 @@ function emitBetPlacedParticles(x: number, y: number): Particle[] {
   return particles;
 }
 
-function emitWinParticles(x: number, y: number): Particle[] {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _emitWinParticles(x: number, y: number): Particle[] {
   const particles: Particle[] = [];
   const colors = ['#4ade80', '#22c55e', '#fbbf24', '#ffffff', '#f472b6'];
   
@@ -94,7 +167,8 @@ function emitWinParticles(x: number, y: number): Particle[] {
   return particles;
 }
 
-function updateParticles(particles: Particle[], deltaTime: number): Particle[] {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _updateParticles(particles: Particle[], deltaTime: number): Particle[] {
   return particles
     .map(p => ({
       ...p,
@@ -107,7 +181,8 @@ function updateParticles(particles: Particle[], deltaTime: number): Particle[] {
     .filter(p => p.life > 0);
 }
 
-function renderParticles(ctx: CanvasRenderingContext2D, particles: Particle[], offsetX: number) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _renderParticles(ctx: CanvasRenderingContext2D, particles: Particle[], offsetX: number) {
   particles.forEach(p => {
     const screenX = p.x - offsetX;
     const alpha = Math.max(0, p.life);
@@ -769,7 +844,6 @@ let consecutiveWins = 0;
 let consecutiveLosses = 0;
 
 // Track price movement state for smarter chat
-let lastSignificantMoveTime = Date.now(); // Initialize to now, not 0
 let priceWasFlat = false;
 let flatStartTime = 0;
 
@@ -779,6 +853,7 @@ interface UseGameEngineOptions {
   betAmount: number;
   sessionId: string;  // Game session ID for bet tracking
   isAuthenticated: boolean;  // Whether user is authenticated
+  walletAddress?: string | null;  // Wallet address for socket identification
   isAutoPlaying?: boolean;  // Auto-play mode (infinite gems, no balance changes)
   sidebarWidth?: number;  // Width of left sidebar to offset canvas
   onBalanceChange: (newBalance: number) => void;  // Server-provided balance updates only
@@ -811,6 +886,7 @@ export function useGameEngine({
   betAmount,
   sessionId,
   isAuthenticated,
+  walletAddress,
   isAutoPlaying = false,
   sidebarWidth = 56,
   onBalanceChange,
@@ -853,6 +929,7 @@ export function useGameEngine({
     cellSize: number;
     amount: number;
     multiplier: number;
+    oddsIndex: number;
   }
   const dragBetQueueRef = useRef<QueuedBet[]>([]);
   const isDraggingRef = useRef(false);
@@ -875,6 +952,240 @@ export function useGameEngine({
     lastSpecialCellTime: Date.now(),
     last5xCellTime: Date.now(),
   });
+  
+  // ========== SOCKET CONNECTION FOR SERVER-AUTHORITATIVE GAME ==========
+  // Handles: game state, heatmap, bet resolution, balance updates
+  const socketRef = useRef<Socket | null>(null);
+  const heatmapRef = useRef<Map<string, HeatmapCell>>(new Map());
+  const serverBetsRef = useRef<ServerBetData[]>([]);
+  
+  // Server state for interpolation - client smoothly moves towards these targets
+  const serverStateRef = useRef<{
+    targetPriceY: number;
+    targetOffsetX: number;
+    lastUpdate: number;
+  }>({
+    targetPriceY: 0,
+    targetOffsetX: 0,
+    lastUpdate: 0,
+  });
+  
+  // Track wallet address for identifying our bets
+  const walletAddressRef = useRef<string | null>(null);
+  
+  // Store callbacks in refs for socket handlers
+  const onBalanceChangeRef = useRef(onBalanceChange);
+  const onWinRef = useRef(onWin);
+  const onTotalWonChangeRef = useRef(onTotalWonChange);
+  const onTotalLostChangeRef = useRef(onTotalLostChange);
+  
+  useEffect(() => {
+    onBalanceChangeRef.current = onBalanceChange;
+    onWinRef.current = onWin;
+    onTotalWonChangeRef.current = onTotalWonChange;
+    onTotalLostChangeRef.current = onTotalLostChange;
+  }, [onBalanceChange, onWin, onTotalWonChange, onTotalLostChange]);
+  
+  // Connect to socket for server-authoritative game
+  useEffect(() => {
+    const socket = io(GAME_SERVER_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+    });
+    
+    socketRef.current = socket;
+    
+    socket.on('connect', () => {
+      console.log('[GameEngine] Connected to game server (server-authoritative mode)');
+      
+      // Identify wallet for authenticated bet placement
+      if (walletAddress) {
+        socket.emit('identify', { walletAddress });
+        console.log('[GameEngine] Identified wallet:', walletAddress.slice(0, 8));
+      }
+    });
+    
+    // ========== RECEIVE AUTHORITATIVE GAME STATE FROM SERVER ==========
+    // Server is the single source of truth - client just renders
+    socket.on('gameState', (serverState: { 
+      priceY: number;
+      targetPriceY: number;
+      offsetX: number;
+      currentPrice: number | null;
+      priceHistory: Array<{ x: number; y: number }>;
+      columns: Array<{ id: string; x: number; cells: Record<number, { id: string; multiplier: string }> }>;
+      bets: ServerBetData[];
+      heatmap?: HeatmapCell[];
+      gridSpeed: number;
+      volatility: 'active' | 'low' | 'idle';
+      serverTime: number;
+    }) => {
+      const state = stateRef.current;
+      
+      // Store server targets for smooth interpolation
+      serverStateRef.current = {
+        targetPriceY: serverState.priceY, // Server's current priceY is our target
+        targetOffsetX: serverState.offsetX,
+        lastUpdate: Date.now(),
+      };
+      
+      // Update price from server
+      if (serverState.currentPrice !== null) {
+        priceRef.current = serverState.currentPrice;
+        if (basePriceRef.current === null) {
+          basePriceRef.current = serverState.currentPrice;
+        }
+      }
+      
+      // Update price history from server (authoritative)
+      state.priceHistory = serverState.priceHistory;
+      
+      // Update volatility
+      if (serverState.volatility) {
+        setVolatilityLevel(serverState.volatility);
+      }
+      state.currentSpeed = serverState.gridSpeed;
+      
+      // Update heatmap lookup
+      if (serverState.heatmap) {
+        const newHeatmap = new Map<string, HeatmapCell>();
+        for (const cell of serverState.heatmap) {
+          newHeatmap.set(`${cell.colId}-${cell.yIndex}`, cell);
+        }
+        heatmapRef.current = newHeatmap;
+      }
+      
+      // Track server bets (from other players)
+      if (serverState.bets) {
+        serverBetsRef.current = serverState.bets;
+      }
+      
+      // Mark as initialized once we receive first server state
+      if (!state.initialized) {
+        state.initialized = true;
+        state.offsetX = serverState.offsetX;
+        state.priceY = serverState.priceY;
+        state.targetPriceY = serverState.priceY;
+      }
+    });
+    
+    // When another player places a bet, it shows on our heatmap via gameState updates
+    socket.on('betPlaced', (bet: ServerBetData) => {
+      console.log('[GameEngine] Bet placed by', bet.walletAddress?.slice(0, 8));
+    });
+    
+    // ========== SERVER CONFIRMATION OF BET RESOLUTION ==========
+    // Client resolves optimistically, server confirms or corrects
+    socket.on('betResolved', (data: {
+      bet: { id: string; colId: string; yIndex: number; wager: number; payout: number; walletAddress: string; status: string };
+      won: boolean;
+      dbBetId?: string;
+      actualWin?: number;
+      newBalance?: number;
+    }) => {
+      console.log('[GameEngine] Server confirmed bet:', data.bet.id, data.won ? 'WON' : 'LOST', 'dbBetId:', data.dbBetId);
+      
+      // Find our local bet that matches this server bet
+      // Match by serverId (database bet ID) if available
+      const state = stateRef.current;
+      let localBet = data.dbBetId 
+        ? state.bets.find(b => b.serverId === data.dbBetId)
+        : null;
+      
+      // Fallback: match by yIndex and amount for recently resolved bets
+      if (!localBet) {
+        localBet = state.bets.find(b => 
+          b.yIndex === data.bet.yIndex &&
+          b.amount === data.bet.wager &&
+          (b.status === 'pending' || b.status === 'placing' || b.status === 'won' || b.status === 'lost')
+        );
+      }
+      
+      if (!localBet) {
+        console.log('[GameEngine] No matching local bet found for server resolution');
+        return;
+      }
+      
+      const wasAlreadyResolved = localBet.status === 'won' || localBet.status === 'lost';
+      const previousStatus = localBet.status;
+      const serverWon = data.won;
+      
+      // Check if server disagrees with our optimistic resolution
+      if (wasAlreadyResolved) {
+        const localWon = previousStatus === 'won';
+        
+        if (localWon !== serverWon) {
+          console.warn('[GameEngine] Server correction needed:', { localSaid: previousStatus, serverSays: serverWon ? 'won' : 'lost' });
+          
+          // Correct the bet status
+          localBet.status = serverWon ? 'won' : 'lost';
+          
+          // Correct the stats
+          const autoPlaying = isAutoPlayingRef.current;
+          if (!autoPlaying) {
+            if (serverWon && !localWon) {
+              // We thought loss, server says win - add winnings back
+              const winAmount = data.actualWin || localBet.amount * localBet.multiplier;
+              balanceRef.current += winAmount;
+              onBalanceChangeRef.current(balanceRef.current);
+              onTotalWonChangeRef.current(prev => prev + winAmount - localBet.amount);
+              onTotalLostChangeRef.current(prev => prev - localBet.amount);
+            } else if (!serverWon && localWon) {
+              // We thought win, server says loss - remove winnings
+              const expectedWin = localBet.amount * localBet.multiplier;
+              balanceRef.current -= expectedWin;
+              onBalanceChangeRef.current(balanceRef.current);
+              onTotalWonChangeRef.current(prev => prev - expectedWin + localBet.amount);
+              onTotalLostChangeRef.current(prev => prev + localBet.amount);
+            }
+          }
+        }
+        // If server agrees with us, no action needed - optimistic resolution was correct
+      } else {
+        // Bet wasn't resolved yet (shouldn't happen with optimistic, but handle it)
+        localBet.status = serverWon ? 'won' : 'lost';
+        const autoPlaying = isAutoPlayingRef.current;
+        const sounds = getGameSounds();
+        
+        if (serverWon) {
+          const winAmount = data.actualWin || localBet.amount * localBet.multiplier;
+          sounds.play('win');
+          
+          if (!autoPlaying) {
+            balanceRef.current += winAmount;
+            onBalanceChangeRef.current(balanceRef.current);
+            onTotalWonChangeRef.current(prev => prev + winAmount - localBet.amount);
+          }
+        } else {
+          sounds.play('lose');
+          if (!autoPlaying) {
+            onTotalLostChangeRef.current(prev => prev + localBet.amount);
+          }
+        }
+        
+        setPendingBetsCount(prev => Math.max(0, prev - 1));
+      }
+      
+      // Sync balance with server if provided (authoritative)
+      if (data.newBalance !== undefined && !isAutoPlayingRef.current) {
+        balanceRef.current = data.newBalance;
+        onBalanceChangeRef.current(data.newBalance);
+      }
+    });
+    
+    // Balance update from server (authoritative)
+    socket.on('balanceUpdate', (data: { newBalance: number; reason: string }) => {
+      console.log('[GameEngine] Balance update from server:', data.newBalance, data.reason);
+      onBalanceChangeRef.current(data.newBalance);
+      balanceRef.current = data.newBalance;
+    });
+    
+    return () => {
+      socket.disconnect();
+    };
+  }, [isMobile, zoomLevel, walletAddress]);
   
   // Track tab visibility to handle price jumps smoothly
   const lastFrameTimeRef = useRef<number>(Date.now());
@@ -1005,12 +1316,24 @@ export function useGameEngine({
       centerIndex: currentPriceIndex,
     });
     
+    // Clean up old columns, but NEVER remove columns that have pending bets
     if (state.columns.length > 100) {
-      state.columns.shift();
+      // Find first column that can be safely removed (no pending bets on it)
+      const indexToRemove = state.columns.findIndex(col => {
+        const hasPendingBet = state.bets.some(
+          bet => bet.colId === col.id && (bet.status === 'pending' || bet.status === 'placing')
+        );
+        return !hasPendingBet;
+      });
+      
+      if (indexToRemove !== -1 && indexToRemove < state.columns.length - 50) {
+        // Only remove if it's not one of the recent columns
+        state.columns.splice(indexToRemove, 1);
+      }
     }
     
     state.lastGenX = xPosition;
-  }, [getCellSize]);
+  }, [getCellSize, zoomLevel]);
 
   const playSound = useCallback((type: 'win' | 'click' | 'lose') => {
     const sounds = getGameSounds();
@@ -1171,33 +1494,52 @@ export function useGameEngine({
         if (isDraggingRef.current) {
           dragBetQueueRef.current.push({
             localId: localBetId,
-            columnId: clickedCol.id,
+            columnId: clickedCol.x.toString(), // Use X position for server column matching
             yIndex,
             basePrice,
             cellSize,
             amount: currentBetAmount,
             multiplier,
+            oddsIndex: zoomIndex,
           });
           return true; // Bet queued, will be sent on drag end
         }
         
-        // SINGLE BET: Send immediately
-        try {
-          const result = await gameAPI.placeBet({
-            sessionId: sessionIdRef.current,
-            columnId: clickedCol.id,
-            yIndex,
-            basePrice,
-            cellSize,
-            amount: currentBetAmount,
-            multiplier,
-          });
-          
+        // SINGLE BET: Send via socket for server-authoritative placement
+        const socket = socketRef.current;
+        if (!socket?.connected) {
+          // Socket not connected - REFUND
+          const betIndex = state.bets.findIndex(b => b.id === localBetId);
+          if (betIndex !== -1) {
+            state.bets.splice(betIndex, 1);
+          }
+          pendingBetAmountRef.current = Math.max(0, pendingBetAmountRef.current - currentBetAmount);
+          balanceRef.current += currentBetAmount;
+          onBalanceChange(balanceRef.current);
+          onError?.('Not connected to server');
+          setPendingBetsCount(prev => Math.max(0, prev - 1));
+          return false;
+        }
+        
+        // Emit placeBet via socket
+        // Send column X position and current offsetX so server can sync
+        socket.emit('placeBet', {
+          colId: clickedCol.x.toString(), // Use X position for server column matching
+          yIndex,
+          wager: currentBetAmount,
+          oddsIndex: zoomIndex,
+          oddsMultiplier: multiplier.toString(),
+          sessionId: sessionIdRef.current,
+          basePrice,
+          cellSize,
+          clientOffsetX: state.offsetX, // Send client's world position for server sync
+          useDatabase: true,
+        }, (result: { success: boolean; bet?: { id: string; priceAtBet?: number; winPriceMin?: number; winPriceMax?: number; colId?: string }; error?: string; newBalance?: number; dbBetId?: string }) => {
           if (result.success && result.bet) {
             // Update bet with server data (including win boundaries)
             const bet = state.bets.find(b => b.id === localBetId);
             if (bet) {
-              bet.serverId = result.bet.id;
+              bet.serverId = result.dbBetId || result.bet.id;
               bet.status = 'pending';
               bet.priceAtBet = result.bet.priceAtBet;
               // Store server-calculated win boundaries for visualization
@@ -1207,9 +1549,7 @@ export function useGameEngine({
             
             // Server confirmed - clear pending tracking
             pendingBetAmountRef.current = Math.max(0, pendingBetAmountRef.current - currentBetAmount);
-            // DON'T overwrite balance here - optimistic deduction is already correct
-            // Only sync balance after ALL pending bets are resolved to avoid race conditions
-            // The server balance will be synced when wins/losses are processed
+            // Balance will be synced via socket balanceUpdate events
           } else {
             // Bet REJECTED by server - REFUND the optimistic deduction
             const betIndex = state.bets.findIndex(b => b.id === localBetId);
@@ -1219,36 +1559,21 @@ export function useGameEngine({
             
             // Refund: add the bet amount back
             pendingBetAmountRef.current = Math.max(0, pendingBetAmountRef.current - currentBetAmount);
-            balanceRef.current += currentBetAmount;
+            balanceRef.current = result.newBalance ?? balanceRef.current + currentBetAmount;
             onBalanceChange(balanceRef.current);
             
             onError?.(result.error || 'Failed to place bet');
             playSound('lose');
             setPendingBetsCount(prev => Math.max(0, prev - 1));
-            return false;
           }
-        } catch {
-          // Network error - REFUND the optimistic deduction
-          const betIndex = state.bets.findIndex(b => b.id === localBetId);
-          if (betIndex !== -1) {
-            state.bets.splice(betIndex, 1);
-          }
-          
-          // Refund: add the bet amount back
-          pendingBetAmountRef.current = Math.max(0, pendingBetAmountRef.current - currentBetAmount);
-          balanceRef.current += currentBetAmount;
-          onBalanceChange(balanceRef.current);
-          
-          onError?.('Network error - please try again');
-          setPendingBetsCount(prev => Math.max(0, prev - 1));
-          return false;
-        }
+        });
         
+        // Return true optimistically - socket callback handles errors
         return true;
       }
     }
     return false;
-  }, [isAuthenticated, playSound, getCellSize, getHeadX, getPriceAxisWidth, onBalanceChange, onError]);
+  }, [isAuthenticated, playSound, getCellSize, getHeadX, getPriceAxisWidth, getMinBetColumnsAhead, isMobile, zoomLevel, zoomIndex, onBalanceChange, onError]);
 
   const updatePrice = useCallback((price: number | null) => {
     if (price !== null) {
@@ -1265,8 +1590,9 @@ export function useGameEngine({
     const headX = getHeadX();
     const priceAxisWidth = getPriceAxisWidth();
 
-    // SERVER-AUTHORITATIVE: Resolve bets through API
-    const checkBets = async (currentHeadX: number, headY: number) => {
+    // SERVER-AUTHORITATIVE: Server resolves bets, client just listens
+    // This function only handles DEMO mode (no serverId) for local testing
+    const checkBets = async (currentHeadX: number, currentPriceY: number) => {
       const state = stateRef.current;
       
       for (const bet of state.bets) {
@@ -1275,7 +1601,9 @@ export function useGameEngine({
 
         const col = state.columns.find(c => c.id === bet.colId);
         if (!col) {
-          // Column no longer exists - loss
+          // Column no longer exists - mark as waiting (server will resolve)
+          if (bet.serverId) continue; // Server bets wait for server
+          // Demo mode: loss
           bet.status = 'lost';
           onTotalLostChange(prev => prev + bet.amount);
           playSound('lose');
@@ -1287,183 +1615,30 @@ export function useGameEngine({
         
         // When price line passes the bet column, resolve the bet
         if (currentHeadX > betEndX) {
-          // Helper to get the Y RANGE the price line travels through within column bounds
-          // This allows wins when the price TOUCHES the cell at ANY point, not just at center
-          const getYRangeInColumn = (colStartX: number, colEndX: number): { minY: number; maxY: number; centerY: number } | null => {
-            let minY = Infinity;
-            let maxY = -Infinity;
-            let centerY: number | null = null;
-            const colCenter = colStartX + (colEndX - colStartX) / 2;
-            
-            for (let i = 0; i < state.priceHistory.length - 1; i++) {
-              const p1 = state.priceHistory[i];
-              const p2 = state.priceHistory[i + 1];
-              
-              // Check if this segment overlaps with the column
-              if (p2.x < colStartX || p1.x > colEndX) continue;
-              
-              // Get Y values at the boundaries of overlap
-              const segStartX = Math.max(p1.x, colStartX);
-              const segEndX = Math.min(p2.x, colEndX);
-              
-              // Interpolate Y at segment boundaries
-              const getYAt = (x: number) => {
-                if (p2.x === p1.x) return p1.y;
-                const t = (x - p1.x) / (p2.x - p1.x);
-                return p1.y + t * (p2.y - p1.y);
-              };
-              
-              const y1 = getYAt(segStartX);
-              const y2 = getYAt(segEndX);
-              
-              minY = Math.min(minY, y1, y2);
-              maxY = Math.max(maxY, y1, y2);
-          
-              // Get Y at center for server communication
-              if (segStartX <= colCenter && segEndX >= colCenter) {
-                centerY = getYAt(colCenter);
-              }
-            }
-            
-            if (minY === Infinity) return null;
-            return { minY, maxY, centerY: centerY ?? (minY + maxY) / 2 };
-          };
-          
-          // Get the full Y range the price traveled through in this column
-          const yRange = getYRangeInColumn(col.x, col.x + cellSize);
-          const priceYAtCrossing = yRange?.centerY ?? headY;
-          
-          // WIN DETECTION: Check if price line entered the INNER WIN ZONE of the cell
-          // Win zone is shrunk by WIN_ZONE_MARGIN on each side for house edge
-          const margin = cellSize * GAME_CONFIG.WIN_ZONE_MARGIN;
-          const cellTopY = bet.yIndex * cellSize + margin;      // Shrunk top
-          const cellBottomY = (bet.yIndex + 1) * cellSize - margin;  // Shrunk bottom
-          
-          // Line must enter the shrunk win zone to count as a win
-          const isWin = yRange 
-            ? (yRange.minY < cellBottomY && yRange.maxY > cellTopY)
-            : false;
-          
-          // DEMO MODE: Resolve client-side
-          if (!bet.serverId) {
-            bet.status = isWin ? 'won' : 'lost';
-            const autoPlaying = isAutoPlayingRef.current;
-            
-            // Calculate how close the outcome was for chat messages
-            const cellCenterY = (bet.yIndex + 0.5) * cellSize;
-            const priceDistFromCenter = yRange 
-              ? Math.min(Math.abs(yRange.minY - cellCenterY), Math.abs(yRange.maxY - cellCenterY))
-              : cellSize;
-            const wasClose = priceDistFromCenter < cellSize * 0.6;
-            
-            if (isWin) {
-              consecutiveWins++;
-              consecutiveLosses = 0;
-              
-              const winAmount = bet.amount * bet.multiplier;
-              // Skip balance changes in auto-play mode (infinite gems)
-              if (!autoPlaying) {
-              onBalanceChange(balanceRef.current + winAmount);
-              balanceRef.current += winAmount;
-              }
-              onTotalWonChange(prev => prev + winAmount - bet.amount);
-              
-              // Calculate screen position for win popup
-              const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
-              const screenX = (col.x - state.offsetX + cellSize / 2) * cameraScale;
-              const screenY = (bet.yIndex * cellSize + state.cameraY) * cameraScale;
-              
-              onWin({ amount: winAmount, id: bet.id, screenX, screenY });
-              playSound('win');
-              
-              // Chat bubble for win
-              const now = Date.now();
-              if (now - lastChatTimeRef.current > 1500) { // Short cooldown for game events
-                let chatCategory: keyof typeof CHAT_MESSAGES;
-                if (consecutiveWins >= 3) {
-                  chatCategory = 'winStreak';
-                } else if (bet.multiplier >= 2.0) {
-                  chatCategory = 'userBigWin';
-                } else if (wasClose) {
-                  chatCategory = 'closeCall';
-                } else {
-                  chatCategory = 'userWin';
-                }
-                chatBubbleRef.current = {
-                  message: pickRandomMessage(chatCategory),
-                  startTime: now,
-                  duration: CHAT_DURATION,
-                };
-                lastChatTimeRef.current = now;
-              }
-            } else {
-              consecutiveLosses++;
-              consecutiveWins = 0;
-              
-              // Skip loss tracking in auto-play mode
-              if (!autoPlaying) {
-              onTotalLostChange(prev => prev + bet.amount);
-              }
-              playSound('lose');
-              
-              // Chat bubble for loss
-              const now = Date.now();
-              if (now - lastChatTimeRef.current > 1500) {
-                let chatCategory: keyof typeof CHAT_MESSAGES;
-                if (consecutiveLosses >= 3) {
-                  chatCategory = 'lossStreak';
-                } else if (wasClose) {
-                  chatCategory = 'nearMiss';
-                } else if (bet.amount >= 50) {
-                  chatCategory = 'userBigLoss';
-                } else {
-                  chatCategory = 'userLoss';
-                }
-                chatBubbleRef.current = {
-                  message: pickRandomMessage(chatCategory),
-                  startTime: now,
-                  duration: CHAT_DURATION,
-                };
-                lastChatTimeRef.current = now;
-              }
-            }
-            setPendingBetsCount(prev => Math.max(0, prev - 1));
+          // SERVER BETS: Don't resolve here - wait for betResolved event from server
+          if (bet.serverId) {
+            // Just mark as resolving so we don't check again
+            bet.resolving = true;
             continue;
           }
           
-          // AUTHENTICATED: OPTIMISTIC resolution for instant feedback
-          // Show win/loss immediately, confirm with server in background
-          bet.resolving = true;
+          // DEMO MODE ONLY: Simple cell-based resolution (matches server logic)
+          // Check if current priceY is within the bet's cell (with win zone margin)
+          const margin = GAME_CONFIG.WIN_ZONE_MARGIN;
+          const effectiveMin = bet.yIndex + margin;
+          const effectiveMax = bet.yIndex + 1 - margin;
+          const priceInCell = currentPriceY / cellSize;
           
-          // Calculate the price RANGE at crossing for "touch" detection
-          const resolveBasePrice = bet.basePriceAtBet ?? basePriceRef.current ?? 0;
-          const priceAtCrossing = resolveBasePrice + (cellSize / 2 - priceYAtCrossing) / GAME_CONFIG.PRICE_SCALE;
+          const isWin = priceInCell >= effectiveMin && priceInCell <= effectiveMax;
           
-          // Convert Y range to price range for server validation
-          const priceRangeMin = yRange 
-            ? resolveBasePrice + (cellSize / 2 - yRange.maxY) / GAME_CONFIG.PRICE_SCALE 
-            : priceAtCrossing;
-          const priceRangeMax = yRange 
-            ? resolveBasePrice + (cellSize / 2 - yRange.minY) / GAME_CONFIG.PRICE_SCALE 
-            : priceAtCrossing;
-          
-          // INSTANT FEEDBACK: Update UI immediately based on client calculation
-          const autoPlaying = isAutoPlayingRef.current;
           bet.status = isWin ? 'won' : 'lost';
-          
-          // Calculate how close the outcome was
-          const cellCenterY = (bet.yIndex + 0.5) * cellSize;
-          const priceDistFromCenter = yRange 
-            ? Math.min(Math.abs(yRange.minY - cellCenterY), Math.abs(yRange.maxY - cellCenterY))
-            : cellSize;
-          const wasClose = priceDistFromCenter < cellSize * 0.6;
+          const autoPlaying = isAutoPlayingRef.current;
           
           if (isWin) {
             consecutiveWins++;
             consecutiveLosses = 0;
             
             const winAmount = bet.amount * bet.multiplier;
-            
             if (!autoPlaying) {
               onBalanceChange(balanceRef.current + winAmount);
               balanceRef.current += winAmount;
@@ -1473,29 +1648,9 @@ export function useGameEngine({
             const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
             const screenX = (col.x - state.offsetX + cellSize / 2) * cameraScale;
             const screenY = (bet.yIndex * cellSize + state.cameraY) * cameraScale;
+            
             onWin({ amount: winAmount, id: bet.id, screenX, screenY });
             playSound('win');
-            
-            // Chat bubble for win
-            const now = Date.now();
-            if (now - lastChatTimeRef.current > 1500) {
-              let chatCategory: keyof typeof CHAT_MESSAGES;
-              if (consecutiveWins >= 3) {
-                chatCategory = 'winStreak';
-              } else if (bet.multiplier >= 2.0) {
-                chatCategory = 'userBigWin';
-              } else if (wasClose) {
-                chatCategory = 'closeCall';
-              } else {
-                chatCategory = 'userWin';
-              }
-              chatBubbleRef.current = {
-                message: pickRandomMessage(chatCategory),
-                startTime: now,
-                duration: CHAT_DURATION,
-              };
-              lastChatTimeRef.current = now;
-            }
           } else {
             consecutiveLosses++;
             consecutiveWins = 0;
@@ -1504,229 +1659,16 @@ export function useGameEngine({
               onTotalLostChange(prev => prev + bet.amount);
             }
             playSound('lose');
-            
-            // Chat bubble for loss
-            const now = Date.now();
-            if (now - lastChatTimeRef.current > 1500) {
-              let chatCategory: keyof typeof CHAT_MESSAGES;
-              if (consecutiveLosses >= 3) {
-                chatCategory = 'lossStreak';
-              } else if (wasClose) {
-                chatCategory = 'nearMiss';
-              } else if (bet.amount >= 50) {
-                chatCategory = 'userBigLoss';
-              } else {
-                chatCategory = 'userLoss';
-              }
-              chatBubbleRef.current = {
-                message: pickRandomMessage(chatCategory),
-                startTime: now,
-                duration: CHAT_DURATION,
-              };
-              lastChatTimeRef.current = now;
-            }
           }
           setPendingBetsCount(prev => Math.max(0, prev - 1));
-          
-          // BACKGROUND: Confirm with server (non-blocking)
-          resolveBetOnServer(bet, isWin, priceAtCrossing, priceRangeMin, priceRangeMax);
         }
-      }
-    };
-    
-    // Resolve bet on server (async, non-blocking) - confirms optimistic update
-    const resolveBetOnServer = async (
-      bet: Bet, 
-      clientHint: boolean, 
-      priceAtCrossing: number,
-      priceRangeMin?: number,
-      priceRangeMax?: number
-    ) => {
-      if (!bet.serverId) return;
-      
-      try {
-        const result = await gameAPI.resolveBet(bet.serverId, clientHint, priceAtCrossing, priceRangeMin, priceRangeMax);
-        
-        if (result.success && result.bet) {
-          const serverBet = result.bet;
-          const serverIsWin = serverBet.status === 'won';
-          const clientWasWin = bet.status === 'won';
-          
-          // Check if server disagrees with our optimistic update
-          if (serverIsWin !== clientWasWin) {
-            console.warn('[Bet] Server correction:', { 
-              betId: bet.id, 
-              clientSaid: bet.status, 
-              serverSays: serverBet.status 
-            });
-            
-            // Correct the optimistic update
-          bet.status = serverBet.status as 'won' | 'lost';
-            const autoPlaying = isAutoPlayingRef.current;
-          
-            if (serverIsWin && !clientWasWin) {
-              // We said loss, server says win - add winnings
-            const winAmount = serverBet.actualWin;
-              if (!autoPlaying) {
-                onBalanceChange(balanceRef.current + winAmount);
-                balanceRef.current += winAmount;
-              }
-              onTotalWonChange(prev => prev + winAmount);
-              onTotalLostChange(prev => prev - bet.amount);
-            playSound('win');
-            } else if (!serverIsWin && clientWasWin) {
-              // We said win, server says loss - remove winnings
-              const expectedWin = bet.amount * bet.multiplier;
-              if (!autoPlaying) {
-                onBalanceChange(balanceRef.current - expectedWin);
-                balanceRef.current -= expectedWin;
-              }
-              onTotalWonChange(prev => prev - expectedWin + bet.amount);
-              onTotalLostChange(prev => prev + bet.amount);
-            }
-          }
-          
-          // Sync balance with server periodically (every 10th resolution)
-          if (Math.random() < 0.1) {
-            const balanceData = await gameAPI.getBalance();
-            if (balanceData?.user) {
-              onBalanceChange(balanceData.user.gemsBalance);
-              balanceRef.current = balanceData.user.gemsBalance;
-            }
-          }
-        }
-      } catch (error) {
-        // Network error - optimistic update stands, will reconcile on next balance sync
-        console.error('Failed to confirm bet resolution:', error);
       }
     };
 
-    // TIME-NORMALIZED: Track last volatility sample time for consistent sampling
-    let lastVolatilitySampleTime = 0;
-    const VOLATILITY_SAMPLE_INTERVAL_MS = 50; // Sample every 50ms regardless of framerate
-    
-    // SAME-ROW DETECTION: Prevent horizontal line wins by tracking Y cell position
-    // If price stays in the same row too long, STOP the grid completely
-    let lastYCellIndex: number | null = null;
-    let sameRowStartTime = 0;
-    let sameRowColumnsAdvanced = 0; // Track how many columns we've moved while in same row
-    const MAX_SAME_ROW_COLUMNS = 2; // Stop grid after passing 2 columns in same row
-    const SAME_ROW_SPEED_PENALTY = 0.1; // Severe speed reduction when stuck in same row
-    
-    // DIRECTION TRACKING: Detect sideways consolidation (high volume, flat price)
-    let lastDirectionChangePrice = 0;
-    let lastDirection: 'up' | 'down' | null = null;
-    let directionChanges = 0;
-    let directionChangeResetTime = 0;
-    const DIRECTION_CHANGE_WINDOW_MS = 3000; // Track direction changes over 3 seconds
-    const MIN_DIRECTION_CHANGE = 0.001; // Minimum price change to count as direction change
-    
-    const calculateVolatility = (currentPrice: number, now: number): number => {
-      const state = stateRef.current;
-      
-      // SAME-ROW TRACKING: Check if price is in the same Y cell as before
-      // This is the KEY to preventing horizontal line wins
-      const currentYCell = Math.floor(state.priceY / cellSize);
-      
-      if (lastYCellIndex === null) {
-        lastYCellIndex = currentYCell;
-        sameRowStartTime = now;
-        sameRowColumnsAdvanced = 0;
-      } else if (currentYCell !== lastYCellIndex) {
-        // Price changed rows! Reset tracking and allow movement
-        lastYCellIndex = currentYCell;
-        sameRowStartTime = now;
-        sameRowColumnsAdvanced = 0;
-      }
-      
-      // Calculate how many columns we've advanced while in the same row
-      // This is based on accumulated offset movement
-      const columnWidth = cellSize;
-      sameRowColumnsAdvanced = Math.floor((state.offsetX - (sameRowStartTime > 0 ? 0 : state.offsetX)) / columnWidth);
-      
-      // TIME-NORMALIZED: Only sample price at fixed time intervals
-      if (now - lastVolatilitySampleTime >= VOLATILITY_SAMPLE_INTERVAL_MS) {
-        state.recentPrices.push(currentPrice);
-        lastVolatilitySampleTime = now;
-        
-        if (state.recentPrices.length > GAME_CONFIG.FLATLINE_WINDOW) {
-          state.recentPrices.shift();
-        }
-        
-        // DIRECTION CHANGE TRACKING: Detect sideways/consolidation patterns
-        if (now - directionChangeResetTime > DIRECTION_CHANGE_WINDOW_MS) {
-          directionChanges = Math.floor(directionChanges * 0.5);
-          directionChangeResetTime = now;
-        }
-        
-        const priceDelta = currentPrice - lastDirectionChangePrice;
-        if (Math.abs(priceDelta) > MIN_DIRECTION_CHANGE) {
-          const currentDirection = priceDelta > 0 ? 'up' : 'down';
-          if (lastDirection !== null && currentDirection !== lastDirection) {
-            directionChanges++;
-          }
-          lastDirection = currentDirection;
-          lastDirectionChangePrice = currentPrice;
-        }
-      }
-      
-      if (state.recentPrices.length < 10) {
-        return GAME_CONFIG.GRID_SPEED_ACTIVE;
-      }
-      
-      const minPrice = Math.min(...state.recentPrices);
-      const maxPrice = Math.max(...state.recentPrices);
-      const priceRange = maxPrice - minPrice;
-      
-      const firstPrice = state.recentPrices[0];
-      const netMovement = Math.abs(currentPrice - firstPrice);
-      
-      const isConsolidating = directionChanges >= 4 && netMovement < priceRange * 0.3;
-      
-      // SAME-ROW PENALTY: If we've been in the same row too long, severely slow down
-      // This PREVENTS more than 2-3 wins in a horizontal line
-      const timeInSameRow = now - sameRowStartTime;
-      const sameRowTooLong = timeInSameRow > 1500; // More than 1.5 seconds in same row
-      
-      if (sameRowTooLong) {
-        // Price stuck in same row - apply speed penalty but NEVER stop completely
-        // The longer we're stuck, the slower we go (but always moves forward)
-        const stuckFactor = Math.min(timeInSameRow / 5000, 1); // 0 to 1 over 5 seconds
-        const penalizedSpeed = GAME_CONFIG.GRID_SPEED_IDLE * (1 - stuckFactor * 0.7);
-        setVolatilityLevel('idle');
-        return Math.max(penalizedSpeed, GAME_CONFIG.GRID_SPEED_MIN); // Always moves forward!
-      }
-      
-      // FLATLINE: Price barely moving at all - still crawl forward
-      if (priceRange < GAME_CONFIG.FLATLINE_THRESHOLD * 0.4) {
-        setVolatilityLevel('idle');
-        return Math.max(GAME_CONFIG.GRID_SPEED_IDLE, GAME_CONFIG.GRID_SPEED_MIN);
-      }
-      
-      // SIDEWAYS CONSOLIDATION: High volume but price staying flat
-      if (isConsolidating || netMovement < GAME_CONFIG.FLATLINE_THRESHOLD * 0.5) {
-        setVolatilityLevel('idle');
-        return Math.max(GAME_CONFIG.GRID_SPEED_IDLE, GAME_CONFIG.GRID_SPEED_MIN);
-      }
-      
-      // LOW VOLATILITY: Small price range
-      if (priceRange < GAME_CONFIG.FLATLINE_THRESHOLD) {
-        setVolatilityLevel('low');
-        return GAME_CONFIG.GRID_SPEED_LOW;
-      }
-      
-      // ACTIVE TRENDING: Price is actually moving in a direction
-      setVolatilityLevel('active');
-      const trendStrength = netMovement / priceRange;
-      const rangeMultiplier = Math.min(priceRange / 0.008, 1);
-      const effectiveMultiplier = rangeMultiplier * (0.5 + trendStrength * 0.5);
-      return GAME_CONFIG.GRID_SPEED_LOW + (GAME_CONFIG.GRID_SPEED_ACTIVE - GAME_CONFIG.GRID_SPEED_LOW) * effectiveMultiplier;
-    };
+    // NOTE: Volatility calculation is now SERVER-SIDE
+    // Server determines grid speed and volatility level, sends via gameState socket
 
     const updatePhysics = () => {
-      const currentPrice = priceRef.current;
-      if (currentPrice === null) return;
-      
       const state = stateRef.current;
       const width = canvas.width;
       const now = Date.now();
@@ -1737,128 +1679,46 @@ export function useGameEngine({
       // Clamp to prevent huge jumps on slow frames (max 3x normal speed)
       const deltaTime = Math.min(timeSinceLastFrame, TARGET_FRAME_MS * 3) / TARGET_FRAME_MS;
 
-      if (basePriceRef.current === null) {
-        basePriceRef.current = currentPrice;
-        state.lastPrice = currentPrice;
-        state.priceY = cellSize / 2;
-        state.targetPriceY = cellSize / 2;
-      }
-
-      // Detect if we're returning from a hidden tab (frame gap > 500ms)
-      const wasTabHidden = timeSinceLastFrame > 500;
+      // ========== SERVER-AUTHORITATIVE PHYSICS ==========
+      // Client smoothly interpolates towards server-provided targets
+      // Server is the single source of truth for all game state
       
-      // Check if there are active bets - if so, DON'T reset basePrice
-      // This prevents the coordinate system from shifting under active bets
-      const hasActiveBets = state.bets.some(b => b.status === 'pending' || b.status === 'placing');
+      const serverState = serverStateRef.current;
+      const hasServerData = serverState.lastUpdate > 0;
       
-      if (wasTabHidden && !hasActiveBets) {
-        // Tab was hidden and NO active bets - safe to snap to current price
-        // This prevents manipulation and visual spikes
-        basePriceRef.current = currentPrice;
-        state.priceY = cellSize / 2;
-        state.targetPriceY = cellSize / 2;
-        state.recentPrices = []; // Reset volatility calculation
-        state.lastPrice = currentPrice;
+      if (hasServerData) {
+        // SNAP offsetX to server immediately - no interpolation
+        // Server's priceHistory uses server's offsetX, so we must match exactly
+        state.offsetX = serverState.targetOffsetX;
         
-        // Clear the price history gap
-        const lastPoint = state.priceHistory[state.priceHistory.length - 1];
-        if (lastPoint) {
-          // Add a gap marker or just continue from current position
-          state.priceHistory.push({ x: state.offsetX + headX, y: state.priceY });
+        // priceY: smooth interpolation for nice price line movement
+        const priceDiff = serverState.targetPriceY - state.priceY;
+        const priceSmoothing = 1 - Math.pow(1 - GAME_CONFIG.PRICE_SMOOTHING, deltaTime);
+        state.priceY += priceDiff * priceSmoothing;
+        state.targetPriceY = serverState.targetPriceY;
+      } else {
+        // No server data yet - initialize with defaults
+        if (!state.initialized) {
+          state.priceY = cellSize / 2;
+          state.targetPriceY = cellSize / 2;
         }
-      } else if (wasTabHidden && hasActiveBets) {
-        // Tab was hidden but we have active bets - DON'T reset basePrice
-        // Just reset volatility and continue from where we were
-        state.recentPrices = [];
-        // Let the price smoothly catch up instead of jumping
       }
 
-      const targetSpeed = calculateVolatility(currentPrice, now);
-      // TIME-NORMALIZED: Speed smoothing and movement scaled by deltaTime
-      const speedSmoothing = 1 - Math.pow(0.98, deltaTime);
-      state.currentSpeed += (targetSpeed - state.currentSpeed) * speedSmoothing;
-      state.offsetX += state.currentSpeed * deltaTime;
-
+      // Generate columns as needed (client-side for rendering)
       const rightEdge = state.offsetX + width;
-      // Generate columns far enough ahead for betting (MIN_BET_COLUMNS_AHEAD + larger buffer for high volatility)
       const colBufferAhead = (isMobile ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD) + 25;
-      // Generate MULTIPLE columns per frame - higher limit for fast movement during high volatility
       let columnsGenerated = 0;
       while (state.lastGenX < rightEdge + cellSize * colBufferAhead && columnsGenerated < 50) {
         generateColumn(state.lastGenX + cellSize, state.priceY);
         columnsGenerated++;
       }
-
-      const priceDelta = currentPrice - basePriceRef.current;
-      state.targetPriceY = -priceDelta * GAME_CONFIG.PRICE_SCALE + cellSize / 2;
-      
-      // TIME-NORMALIZED: Use time-based exponential smoothing for consistent movement
-      // Use faster smoothing if the gap is large (catch up quicker)
-      const diff = state.targetPriceY - state.priceY;
-      const baseSmoothingFactor = Math.abs(diff) > cellSize * 3 
-        ? 0.3  // Fast catch-up for large gaps
-        : GAME_CONFIG.PRICE_SMOOTHING;
-      // Convert per-frame smoothing to time-based: 1 - (1 - factor)^deltaTime
-      const smoothing = 1 - Math.pow(1 - baseSmoothingFactor, deltaTime);
-      state.priceY += diff * smoothing;
-      
-      // ========== HOUSE EDGE: BET AVOIDANCE ==========
-      // Gentle repulsion from nearby pending bets
-      // This makes the game slightly harder without being unfair
-      
-      let avoidanceForce = 0;
-      const currentWorldXForAvoid = state.offsetX + headX;
-      
-      for (const bet of state.bets) {
-        if (bet.status !== 'pending' && bet.status !== 'placing') continue;
-        
-        const col = state.columns.find(c => c.id === bet.colId);
-        if (!col) continue;
-        
-        // Only consider bets 1-4 columns ahead
-        const columnsAhead = (col.x - currentWorldXForAvoid) / cellSize;
-        if (columnsAhead < 0.5 || columnsAhead > 4) continue;
-        
-        // Calculate vertical distance to bet cell
-        const betCenterY = bet.yIndex * cellSize + cellSize / 2;
-        const distY = state.priceY - betCenterY;
-        const absDistY = Math.abs(distY);
-        
-        // Only apply avoidance if price is close to the bet (within 2 cells)
-        if (absDistY < cellSize * 2) {
-          // Repulsion strength: stronger when closer, weaker when further
-          // Proximity factor: 1 when on top of bet, 0 when 2 cells away
-          const proximityFactor = 1 - (absDistY / (cellSize * 2));
-          // Distance factor: stronger for bets that are closer (about to be crossed)
-          const distanceFactor = 1 - (columnsAhead / 4);
-          
-          // Repulsion direction: push away from bet center
-          const repulsionDir = distY > 0 ? 1 : -1;
-          
-          // Force: ~10% of cell size per nearby bet
-          const forceStrength = proximityFactor * distanceFactor * cellSize * 0.10;
-          avoidanceForce += repulsionDir * forceStrength;
-        }
-      }
-      
-      // Cap total avoidance at 20% of cell size
-      avoidanceForce = Math.max(-cellSize * 0.20, Math.min(cellSize * 0.20, avoidanceForce));
-      
-      // Apply avoidance to price position
-      state.priceY += avoidanceForce * deltaTime;
-      
-      // ========== END HOUSE EDGE ==========
+      // NOTE: Bet avoidance (house edge) is now handled SERVER-SIDE
+      // Server applies avoidance force and sends us the final priceY
       
       const currentWorldX = state.offsetX + headX;
       
-      const lastPoint = state.priceHistory[state.priceHistory.length - 1];
-      if (!lastPoint || currentWorldX - lastPoint.x > 0.5) {
-        state.priceHistory.push({ x: currentWorldX, y: state.priceY });
-      }
-      
-      if (state.priceHistory.length > 5000) {
-        state.priceHistory.shift();
-      }
+      // NOTE: Price history is now provided by server - no local generation
+      // Server's priceHistory is authoritative and already populated via gameState socket
 
       // Use virtual height for camera centering (accounts for mobile zoom-out)
       const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
@@ -1868,12 +1728,17 @@ export function useGameEngine({
       const cameraSmoothing = 1 - Math.pow(0.98, deltaTime);
       state.cameraY += (targetCameraY - state.cameraY) * cameraSmoothing;
 
-      state.lastPrice = currentPrice;
+      const currentPrice = priceRef.current;
+      if (currentPrice !== null) {
+        state.lastPrice = currentPrice;
+      }
       checkBets(currentWorldX, state.priceY);
       
       // === CHAT BUBBLES: Price action personality ===
-      // Track price movements over time
-      priceMovementTrackerRef.current.push({ price: currentPrice, time: now });
+      // Track price movements over time (only when we have valid price data)
+      if (currentPrice !== null) {
+        priceMovementTrackerRef.current.push({ price: currentPrice, time: now });
+      }
       // Keep only last 2 seconds of data
       priceMovementTrackerRef.current = priceMovementTrackerRef.current.filter(p => now - p.time < 2000);
       
@@ -1887,7 +1752,6 @@ export function useGameEngine({
         const priceChange = ((newPrice - oldPrice) / oldPrice) * 100;
         
         // Thresholds for SOL price movements (these are % over ~2 seconds)
-        const isBigMove = Math.abs(priceChange) > 0.08;
         const isMediumMove = Math.abs(priceChange) > 0.025;
         const isFlat = Math.abs(priceChange) < 0.01;
         
@@ -1897,7 +1761,6 @@ export function useGameEngine({
         
         // Track if we're seeing movement
         if (isMediumMove) {
-          lastSignificantMoveTime = now;
           priceWasFlat = false;
           flatStartTime = 0;
         } else if (isFlat && !priceWasFlat) {
@@ -1905,7 +1768,6 @@ export function useGameEngine({
           flatStartTime = now;
         }
         
-        const timeSinceMovement = now - lastSignificantMoveTime;
         const timeBeenFlat = priceWasFlat && flatStartTime > 0 ? now - flatStartTime : 0;
         
         // BIG MOVES - high chance to comment
@@ -2099,10 +1961,50 @@ export function useGameEngine({
         // Smooth animation timing
         const animTime = now * 0.001; // Seconds
         
-        Object.entries(col.cells).forEach(([yIdx]) => {
-          const yIndex = parseInt(yIdx);
+        // DYNAMIC CELL GENERATION: Calculate visible Y range and render all cells in that range
+        // This ensures cells are always drawn even if price moved rapidly
+        const startYIndex = Math.floor(startY / cellSize) - 2;
+        const endYIndex = Math.ceil(endY / cellSize) + 2;
+        
+        for (let yIndex = startYIndex; yIndex <= endYIndex; yIndex++) {
           const y = yIndex * cellSize;
-          if (y < startY || y > endY) return;
+          if (y < startY || y > endY) continue;
+          
+          // Dynamically create cell if it doesn't exist (price moved rapidly)
+          if (!col.cells[yIndex]) {
+            col.cells[yIndex] = {
+              id: Math.random().toString(36).substr(2, 9),
+              multiplier: calculateMultiplier(yIndex, currentPriceYIndex, zoomLevel),
+            };
+          }
+          
+          // ========== HEATMAP RENDERING ==========
+          // Show bet density from ALL players (received from server via socket)
+          const heatData = heatmapRef.current.get(`${col.id}-${yIndex}`);
+          if (heatData && heatData.heat > 0) {
+            const heatColor = getHeatColor(heatData.heat);
+            ctx.fillStyle = heatColor;
+            ctx.fillRect(screenX, y, cellSize, cellSize);
+            
+            // Add glow effect for hot cells (many bets)
+            if (heatData.heat > 0.5) {
+              ctx.shadowColor = getHeatColor(heatData.heat);
+              ctx.shadowBlur = 8 * heatData.heat;
+              ctx.fillRect(screenX + 2, y + 2, cellSize - 4, cellSize - 4);
+              ctx.shadowBlur = 0;
+            }
+            
+            // Show bet count for very hot cells
+            if (heatData.betCount > 1) {
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+              ctx.font = `bold ${Math.floor(cellSize * 0.2)}px sans-serif`;
+              ctx.textAlign = 'right';
+              ctx.textBaseline = 'top';
+              ctx.fillText(`${heatData.betCount}🔥`, screenX + cellSize - 4, y + 4);
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+            }
+          }
 
           // Check if this cell is being hovered
           const isHovered = hoverCellRef.current?.colId === col.id && 
@@ -2110,7 +2012,7 @@ export function useGameEngine({
           
           // Check if there's already a bet on this cell
           const hasBet = state.bets.some(b => b.colId === col.id && b.yIndex === yIndex);
-          if (hasBet) return;
+          if (hasBet) continue;
 
           // Unique animation offset per cell for organic feel
           const cellSeed = (col.x * 0.01 + yIndex * 0.1) % 1;
@@ -2200,7 +2102,6 @@ export function useGameEngine({
 
           // Multiplier text
           const dynamicMultiplier = calculateMultiplier(yIndex, currentPriceYIndex, zoomLevel);
-          const mult = parseFloat(dynamicMultiplier);
           
           if (isBettable) {
             const textPulse = Math.sin(animTime * 3 + cellSeed * 5) * 0.5 + 0.5;
@@ -2220,12 +2121,9 @@ export function useGameEngine({
             ctx.font = `${dimFontSize}px "JetBrains Mono", monospace`;
           }
           ctx.fillText(`${dynamicMultiplier}X`, screenX + cellSize / 2, y + cellSize / 2);
-        });
+        }
       }
 
-      // Bet animation timing
-      const betAnimTime = now * 0.001;
-      
       state.bets.forEach(bet => {
         const col = state.columns.find(c => c.id === bet.colId);
         if (!col) return;
@@ -2240,10 +2138,6 @@ export function useGameEngine({
         const isPending = bet.status === 'pending' || bet.status === 'placing';
         const isWon = bet.status === 'won';
         const isLost = bet.status === 'lost';
-        
-        // Unique seed for this bet's animations
-        const betSeed = parseInt(bet.id, 36) % 100 / 100;
-        const pulse = Math.sin(betAnimTime * 4 + betSeed * Math.PI * 2) * 0.5 + 0.5;
         
         if (isPending) {
           // === PENDING BET - Simple clean style (no animations for performance) ===
@@ -2669,6 +2563,7 @@ export function useGameEngine({
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- TARGET_FRAME_MS is a constant, zoomLevel is covered by getCellSize
   }, [generateColumn, playSound, getCellSize, getHeadX, getPriceAxisWidth, isMobile, onBalanceChange, onTotalWonChange, onTotalLostChange, onWin]);
 
   // Resize handler - dynamic canvas sizing
@@ -2787,24 +2682,48 @@ export function useGameEngine({
     isDraggingRef.current = false;
     lastBetCellRef.current = null;
     
-    // FLUSH DRAG BET QUEUE - Send all queued bets in one batch
+    // FLUSH DRAG BET QUEUE - Send all queued bets via socket batch
     const queue = dragBetQueueRef.current;
     if (queue.length > 0 && isAuthenticated) {
       dragBetQueueRef.current = []; // Clear queue immediately
       
-      try {
-        const result = await gameAPI.placeBetBatch({
-          sessionId: sessionIdRef.current,
-          bets: queue.map(q => ({
-            columnId: q.columnId,
-            yIndex: q.yIndex,
-            basePrice: q.basePrice,
-            cellSize: q.cellSize,
-            amount: q.amount,
-            multiplier: q.multiplier,
-          })),
-        });
-        
+      const socket = socketRef.current;
+      if (!socket?.connected) {
+        // Socket not connected - refund all queued bets
+        const state = stateRef.current;
+        for (const queuedBet of queue) {
+          const betIndex = state.bets.findIndex(b => b.id === queuedBet.localId);
+          if (betIndex !== -1) {
+            state.bets.splice(betIndex, 1);
+          }
+          balanceRef.current += queuedBet.amount;
+          pendingBetAmountRef.current = Math.max(0, pendingBetAmountRef.current - queuedBet.amount);
+          setPendingBetsCount(prev => Math.max(0, prev - 1));
+        }
+        onBalanceChange(balanceRef.current);
+        return;
+      }
+      
+      // Send batch via socket with client's world position
+      const currentState = stateRef.current;
+      socket.emit('placeBetBatch', {
+        sessionId: sessionIdRef.current,
+        clientOffsetX: currentState.offsetX,
+        bets: queue.map(q => ({
+          colId: q.columnId,
+          yIndex: q.yIndex,
+          wager: q.amount,
+          oddsIndex: q.oddsIndex,
+          oddsMultiplier: q.multiplier.toString(),
+          basePrice: q.basePrice,
+          cellSize: q.cellSize,
+        })),
+      }, (result: { 
+        success: boolean; 
+        results: Array<{ index: number; success: boolean; betId?: string; error?: string }>;
+        newBalance?: number;
+        error?: string;
+      }) => {
         if (result.success && result.results) {
           const state = stateRef.current;
           
@@ -2819,8 +2738,6 @@ export function useGameEngine({
             if (betResult.success && betResult.betId) {
               bet.serverId = betResult.betId;
               bet.status = 'pending';
-              bet.winPriceMin = betResult.winPriceMin;
-              bet.winPriceMax = betResult.winPriceMax;
             } else {
               // Bet rejected - remove from UI and refund
               const betIndex = state.bets.findIndex(b => b.id === queuedBet.localId);
@@ -2853,21 +2770,7 @@ export function useGameEngine({
           onBalanceChange(balanceRef.current);
           onError?.(result.error || 'Failed to place bets');
         }
-      } catch {
-        // Network error - refund all queued bets
-        const state = stateRef.current;
-        for (const queuedBet of queue) {
-          const betIndex = state.bets.findIndex(b => b.id === queuedBet.localId);
-          if (betIndex !== -1) {
-            state.bets.splice(betIndex, 1);
-          }
-          balanceRef.current += queuedBet.amount;
-          pendingBetAmountRef.current = Math.max(0, pendingBetAmountRef.current - queuedBet.amount);
-          setPendingBetsCount(prev => Math.max(0, prev - 1));
-        }
-        onBalanceChange(balanceRef.current);
-        onError?.('Network error - bets cancelled');
-      }
+      });
     }
   }, [isAuthenticated, onBalanceChange, onError]);
 

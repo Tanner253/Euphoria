@@ -9,7 +9,7 @@ import { Collection, ObjectId } from 'mongodb';
 import { connectToDatabase } from '../mongodb';
 import crypto from 'crypto';
 
-export type WithdrawalStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+export type WithdrawalStatus = 'awaiting_approval' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'rejected';
 
 export interface WithdrawalQueueItem {
   _id?: ObjectId;
@@ -44,6 +44,13 @@ export interface WithdrawalQueueItem {
   processedAt: Date | null;
   failureReason: string | null;
   attemptCount: number;  // Track attempts for logging (no limit)
+  
+  // Admin approval tracking
+  approvedBy: string | null;      // Admin wallet who approved
+  approvedAt: Date | null;
+  rejectedBy: string | null;      // Admin wallet who rejected  
+  rejectedAt: Date | null;
+  rejectionReason: string | null;
   
   // Timestamps
   requestedAt: Date;
@@ -114,9 +121,9 @@ export async function createWithdrawalRequest(data: {
     return existing;
   }
   
-  // Get next queue position atomically
+  // Get next queue position atomically (include both awaiting_approval and pending)
   const lastInQueue = await coll.findOne(
-    { status: 'pending' },
+    { status: { $in: ['awaiting_approval', 'pending'] } },
     { sort: { queuePosition: -1 } }
   );
   const queuePosition = (lastInQueue?.queuePosition || 0) + 1;
@@ -131,12 +138,17 @@ export async function createWithdrawalRequest(data: {
     feeAmount: data.feeAmount,
     netGems: data.netGems,
     solAmount: data.solAmount,
-    status: 'pending',
+    status: 'awaiting_approval',  // Always require admin approval first
     queuePosition,
     txSignature: null,
     processedAt: null,
     failureReason: null,
     attemptCount: 0,
+    approvedBy: null,
+    approvedAt: null,
+    rejectedBy: null,
+    rejectedAt: null,
+    rejectionReason: null,
     requestedAt: new Date(),
     lastAttemptAt: null,
   };
@@ -388,7 +400,7 @@ export async function resetStuckWithdrawals(): Promise<number> {
 }
 
 /**
- * Cancel a pending withdrawal
+ * Cancel a pending or awaiting_approval withdrawal
  */
 export async function cancelWithdrawal(
   withdrawalId: string,
@@ -396,7 +408,7 @@ export async function cancelWithdrawal(
 ): Promise<WithdrawalQueueItem | null> {
   const coll = await getCollection();
   return coll.findOneAndUpdate(
-    { withdrawalId, walletAddress, status: 'pending' },
+    { withdrawalId, walletAddress, status: { $in: ['pending', 'awaiting_approval'] } },
     { $set: { status: 'cancelled', queuePosition: null } },
     { returnDocument: 'after' }
   );
@@ -456,13 +468,13 @@ export async function getAllQueueItems(limit = 50): Promise<WithdrawalQueueItem[
 }
 
 /**
- * Check if user has pending withdrawal
+ * Check if user has pending withdrawal (including awaiting approval)
  */
 export async function hasPendingWithdrawal(walletAddress: string): Promise<boolean> {
   const coll = await getCollection();
   const count = await coll.countDocuments({
     walletAddress,
-    status: { $in: ['pending', 'processing'] }
+    status: { $in: ['awaiting_approval', 'pending', 'processing'] }
   });
   return count > 0;
 }
@@ -476,7 +488,66 @@ export async function getUserPendingWithdrawal(
   const coll = await getCollection();
   return coll.findOne({
     walletAddress,
-    status: { $in: ['pending', 'processing'] }
+    status: { $in: ['awaiting_approval', 'pending', 'processing'] }
   });
+}
+
+/**
+ * Admin: Approve a withdrawal request
+ * Moves status from 'awaiting_approval' to 'pending' (ready for processing)
+ */
+export async function approveWithdrawal(
+  withdrawalId: string,
+  adminWallet: string
+): Promise<WithdrawalQueueItem | null> {
+  const coll = await getCollection();
+  return coll.findOneAndUpdate(
+    { withdrawalId, status: 'awaiting_approval' },
+    {
+      $set: {
+        status: 'pending',
+        approvedBy: adminWallet,
+        approvedAt: new Date()
+      }
+    },
+    { returnDocument: 'after' }
+  );
+}
+
+/**
+ * Admin: Reject a withdrawal request
+ * Refunds gems to user (handled by caller) and marks as rejected
+ */
+export async function rejectWithdrawal(
+  withdrawalId: string,
+  adminWallet: string,
+  reason: string
+): Promise<WithdrawalQueueItem | null> {
+  const coll = await getCollection();
+  return coll.findOneAndUpdate(
+    { withdrawalId, status: 'awaiting_approval' },
+    {
+      $set: {
+        status: 'rejected',
+        queuePosition: null,
+        rejectedBy: adminWallet,
+        rejectedAt: new Date(),
+        rejectionReason: reason
+      }
+    },
+    { returnDocument: 'after' }
+  );
+}
+
+/**
+ * Get all withdrawals awaiting admin approval
+ */
+export async function getAwaitingApproval(limit = 50): Promise<WithdrawalQueueItem[]> {
+  const coll = await getCollection();
+  return coll
+    .find({ status: 'awaiting_approval' })
+    .sort({ requestedAt: 1 })  // Oldest first
+    .limit(limit)
+    .toArray();
 }
 

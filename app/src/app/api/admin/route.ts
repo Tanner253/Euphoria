@@ -11,10 +11,56 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { TransactionService, UserService, BetService, AuditService } from '@/lib/db/services';
 import { connectToDatabase } from '@/lib/db/mongodb';
+import * as WithdrawalQueue from '@/lib/db/models/WithdrawalQueue';
+import { Keypair, Connection, Transaction, SystemProgram, PublicKey } from '@solana/web3.js';
+import bs58 from 'bs58';
+import logger from '@/lib/utils/secureLogger';
 
 // SECURITY: Only available in development mode
 function isDevelopment(): boolean {
   return process.env.NODE_ENV === 'development';
+}
+
+// Helper: Get custodial wallet keypair
+function getCustodialKeypair(): Keypair | null {
+  const privateKey = process.env.CUSTODIAL_WALLET_PRIVATE_KEY;
+  if (!privateKey) return null;
+  
+  try {
+    const decoded = bs58.decode(privateKey);
+    return Keypair.fromSecretKey(decoded);
+  } catch {
+    return null;
+  }
+}
+
+// Helper: Confirm transaction via HTTP polling (avoids WebSocket issues in serverless)
+async function confirmTransactionPolling(
+  connection: Connection,
+  signature: string,
+  maxAttempts: number = 30,
+  delayMs: number = 1000
+): Promise<{ confirmed: boolean; error?: string }> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const status = await connection.getSignatureStatus(signature);
+      
+      if (status?.value?.err) {
+        return { confirmed: false, error: `Transaction failed: ${JSON.stringify(status.value.err)}` };
+      }
+      
+      if (status?.value?.confirmationStatus === 'confirmed' || 
+          status?.value?.confirmationStatus === 'finalized') {
+        return { confirmed: true };
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    } catch (error) {
+      logger.warn('[Admin] Polling attempt failed', { attempt, error });
+    }
+  }
+  
+  return { confirmed: false, error: 'Confirmation timeout' };
 }
 
 export async function GET(request: NextRequest) {
@@ -87,6 +133,7 @@ export async function GET(request: NextRequest) {
       dailyTransactions,
       hourlyBets,
       dailyBets,
+      awaitingApprovalWithdrawals,
     ] = await Promise.all([
       userService.getUsersSummary(),
       transactionService.getTransactionStats(),
@@ -99,6 +146,7 @@ export async function GET(request: NextRequest) {
       transactionService.getAllTransactions({ limit: 10000, startDate: oneDayAgo, endDate: now }),
       betService.getAllBets({ limit: 10000, startDate: oneHourAgo, endDate: now }),
       betService.getAllBets({ limit: 10000, startDate: oneDayAgo, endDate: now }),
+      WithdrawalQueue.getAwaitingApproval(50),
     ]);
     
     // Calculate hourly stats
@@ -301,6 +349,18 @@ export async function GET(request: NextRequest) {
         description: log.description,
         walletAddress: log.walletAddress || null,
         createdAt: log.createdAt,
+      })),
+      
+      // Withdrawals awaiting admin approval
+      pendingApprovals: awaitingApprovalWithdrawals.map(w => ({
+        withdrawalId: w.withdrawalId,
+        walletAddress: w.walletAddress,
+        gemsAmount: w.gemsAmount,
+        feeAmount: w.feeAmount,
+        netGems: w.netGems,
+        solAmount: w.solAmount / 1e9,
+        queuePosition: w.queuePosition,
+        requestedAt: w.requestedAt,
       })),
     });
     
@@ -629,6 +689,238 @@ export async function POST(request: NextRequest) {
         }
       }
       
+      case 'approve_withdrawal': {
+        // Admin approves a withdrawal request - IMMEDIATELY processes it (sends SOL)
+        const { withdrawalId } = body;
+        
+        if (!withdrawalId) {
+          return NextResponse.json(
+            { error: 'Missing withdrawalId' },
+            { status: 400 }
+          );
+        }
+        
+        // Get the withdrawal first
+        const withdrawal = await WithdrawalQueue.getWithdrawal(withdrawalId);
+        if (!withdrawal || withdrawal.status !== 'awaiting_approval') {
+          return NextResponse.json(
+            { error: 'Withdrawal not found or not awaiting approval' },
+            { status: 404 }
+          );
+        }
+        
+        // Get custodial wallet
+        const custodialKeypair = getCustodialKeypair();
+        if (!custodialKeypair) {
+          return NextResponse.json(
+            { error: 'Custodial wallet not configured' },
+            { status: 503 }
+          );
+        }
+        
+        // Check balance
+        const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+        const connection = new Connection(rpcUrl, 'confirmed');
+        const balance = await connection.getBalance(custodialKeypair.publicKey);
+        const lamportsNeeded = withdrawal.solAmount + 5000; // + tx fee buffer
+        
+        if (balance < lamportsNeeded) {
+          return NextResponse.json({
+            success: false,
+            error: `Insufficient custodial balance. Have: ${(balance / 1e9).toFixed(4)} SOL, Need: ${(lamportsNeeded / 1e9).toFixed(4)} SOL`,
+          }, { status: 400 });
+        }
+        
+        // Approve first (move to pending)
+        const adminWallet = 'admin';
+        const approved = await WithdrawalQueue.approveWithdrawal(withdrawalId, adminWallet);
+        
+        if (!approved) {
+          return NextResponse.json(
+            { error: 'Failed to approve withdrawal' },
+            { status: 500 }
+          );
+        }
+        
+        // Now claim for processing
+        const claim = await WithdrawalQueue.claimForProcessing(withdrawalId);
+        if (!claim) {
+          return NextResponse.json(
+            { error: 'Failed to claim withdrawal for processing' },
+            { status: 500 }
+          );
+        }
+        
+        const { lockId } = claim;
+        
+        try {
+          const destinationPubkey = new PublicKey(withdrawal.walletAddress);
+          
+          // Get recent blockhash
+          const { blockhash } = await connection.getLatestBlockhash('confirmed');
+          
+          const transaction = new Transaction({
+            recentBlockhash: blockhash,
+            feePayer: custodialKeypair.publicKey,
+          }).add(
+            SystemProgram.transfer({
+              fromPubkey: custodialKeypair.publicKey,
+              toPubkey: destinationPubkey,
+              lamports: withdrawal.solAmount,
+            })
+          );
+          
+          // Sign and send
+          transaction.sign(custodialKeypair);
+          const signature = await connection.sendRawTransaction(transaction.serialize(), {
+            skipPreflight: false,
+            preflightCommitment: 'confirmed',
+          });
+          
+          // Confirm using HTTP polling
+          const confirmation = await confirmTransactionPolling(connection, signature);
+          
+          if (!confirmation.confirmed) {
+            logger.warn('[Admin] Confirmation timeout, marking completed anyway', {
+              withdrawalId,
+              signature: signature.slice(0, 16)
+            });
+          }
+          
+          // Mark as completed
+          const completed = await WithdrawalQueue.markCompleted(withdrawalId, signature, lockId);
+          
+          if (!completed) {
+            logger.error('[Admin] Failed to mark completed - lock lost', { withdrawalId });
+          }
+          
+          // Also update the transaction record status
+          try {
+            const transactionService = TransactionService.getInstance();
+            await transactionService.confirmWithdrawalByWallet(
+              withdrawal.walletAddress,
+              signature
+            );
+          } catch (syncError) {
+            logger.warn('[Admin] Failed to sync transaction status', {
+              withdrawalId,
+              error: syncError instanceof Error ? syncError.message : 'Unknown'
+            });
+          }
+          
+          await auditService.log({
+            walletAddress: withdrawal.walletAddress,
+            action: 'withdrawal_approved',
+            description: `Admin approved and processed withdrawal ${withdrawalId} for ${withdrawal.solAmount / 1e9} SOL. TX: ${signature.slice(0, 16)}...`,
+          });
+          
+          logger.info('[Admin] Withdrawal approved and processed', {
+            wallet: withdrawal.walletAddress.slice(0, 8),
+            sol: withdrawal.solAmount / 1e9,
+            tx: signature.slice(0, 16)
+          });
+          
+          return NextResponse.json({
+            success: true,
+            action: 'approve_withdrawal',
+            withdrawalId,
+            walletAddress: withdrawal.walletAddress.slice(0, 8) + '...',
+            solAmount: withdrawal.solAmount / 1e9,
+            txSignature: signature,
+            message: `Withdrawal approved and sent! TX: ${signature.slice(0, 16)}...`
+          });
+          
+        } catch (txError) {
+          // Transaction failed - mark as failed and release lock
+          await WithdrawalQueue.markFailed(
+            withdrawalId,
+            txError instanceof Error ? txError.message : 'Transaction failed',
+            lockId
+          );
+          
+          logger.error('[Admin] Withdrawal processing failed', {
+            withdrawalId,
+            error: txError instanceof Error ? txError.message : 'Unknown error'
+          });
+          
+          return NextResponse.json({
+            success: false,
+            error: `Transaction failed: ${txError instanceof Error ? txError.message : 'Unknown error'}`,
+            withdrawalId,
+          }, { status: 500 });
+        }
+      }
+      
+      case 'reject_withdrawal': {
+        // Admin rejects a withdrawal request - refunds gems to user
+        const { withdrawalId, reason } = body;
+        
+        if (!withdrawalId) {
+          return NextResponse.json(
+            { error: 'Missing withdrawalId' },
+            { status: 400 }
+          );
+        }
+        
+        const rejectionReason = reason || 'Rejected by admin';
+        const adminWallet = 'admin';
+        
+        // Get the withdrawal first to know how much to refund
+        const withdrawal = await WithdrawalQueue.getWithdrawal(withdrawalId);
+        if (!withdrawal || withdrawal.status !== 'awaiting_approval') {
+          return NextResponse.json(
+            { error: 'Withdrawal not found or not awaiting approval' },
+            { status: 404 }
+          );
+        }
+        
+        // Reject in queue
+        const rejected = await WithdrawalQueue.rejectWithdrawal(withdrawalId, adminWallet, rejectionReason);
+        
+        if (!rejected) {
+          return NextResponse.json(
+            { error: 'Failed to reject withdrawal' },
+            { status: 500 }
+          );
+        }
+        
+        // Refund gems to user
+        const userService = UserService.getInstance();
+        await userService.updateBalance(
+          rejected.walletAddress,
+          rejected.gemsAmount,  // Refund full amount (including fee, since fee wasn't taken yet)
+          `Refund from rejected withdrawal: ${rejectionReason}`
+        );
+        
+        // Also cancel the transaction record if it exists
+        await transactionsCollection.updateOne(
+          { walletAddress: rejected.walletAddress, type: 'withdrawal', status: 'pending' },
+          { 
+            $set: { 
+              status: 'cancelled', 
+              notes: `Admin rejected: ${rejectionReason}`,
+              cancelledAt: new Date()
+            } 
+          }
+        );
+        
+        await auditService.log({
+          walletAddress: rejected.walletAddress,
+          action: 'withdrawal_rejected',
+          description: `Admin rejected withdrawal ${withdrawalId}: ${rejectionReason}. Refunded ${rejected.gemsAmount} gems.`,
+        });
+        
+        return NextResponse.json({
+          success: true,
+          action: 'reject_withdrawal',
+          withdrawalId,
+          walletAddress: rejected.walletAddress.slice(0, 8) + '...',
+          refundedGems: rejected.gemsAmount,
+          reason: rejectionReason,
+          message: `Withdrawal rejected. ${rejected.gemsAmount} gems refunded to user.`
+        });
+      }
+      
       case 'cancel_all_pending_withdrawals': {
         // Cancel ALL pending withdrawals and refund gems
         // Step 1: Get all pending withdrawals from transactions collection
@@ -671,9 +963,9 @@ export async function POST(request: NextRequest) {
           }
         );
         
-        // Step 4: Also cancel all pending/processing in withdrawal_queue
+        // Step 4: Also cancel all awaiting_approval/pending/processing in withdrawal_queue
         const queueResult = await db.collection('withdrawal_queue').updateMany(
-          { status: { $in: ['pending', 'processing'] } },
+          { status: { $in: ['awaiting_approval', 'pending', 'processing'] } },
           { 
             $set: { 
               status: 'cancelled',

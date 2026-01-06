@@ -33,22 +33,8 @@ interface PlaceBetResponse {
   balance?: number;  // Actual server balance (returned on failure)
 }
 
-interface ResolveBetResponse {
-  success: boolean;
-  error?: string;
-  bet?: {
-    id: string;
-    status: 'won' | 'lost' | 'pending';
-    amount: number;
-    multiplier: number;
-    potentialWin: number;
-    actualWin: number;
-    priceAtBet: number;
-    priceAtResolution?: number;
-  };
-  isWin?: boolean;
-  alreadyResolved?: boolean;
-}
+// NOTE: Bet resolution is now handled via Socket.IO (server-authoritative)
+// The server's gameEngine detects price crossings and emits 'betResolved' events
 
 interface UserBalanceResponse {
   user: {
@@ -144,72 +130,6 @@ class GameAPIService {
   }
   
   /**
-   * Resolve a bet (server-authoritative)
-   * Server validates crossing price range for "touch" win detection
-   */
-  async resolveBet(
-    betId: string, 
-    clientHint?: boolean, 
-    priceAtCrossing?: number,
-    priceRangeMin?: number,
-    priceRangeMax?: number
-  ): Promise<ResolveBetResponse> {
-    if (!this.token) {
-      return { success: false, error: 'Not authenticated' };
-    }
-    
-    try {
-      const response = await fetch('/api/bets/resolve', {
-        method: 'POST',
-        headers: this.getHeaders(),
-        // Send the price RANGE the line traveled through for "touch" detection
-        body: JSON.stringify({ betId, clientHint, priceAtCrossing, priceRangeMin, priceRangeMax }),
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        return { success: false, error: data.error || 'Failed to resolve bet' };
-      }
-      
-      return data;
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Network error' 
-      };
-    }
-  }
-  
-  /**
-   * Get bet status
-   */
-  async getBetStatus(betId: string): Promise<ResolveBetResponse> {
-    if (!this.token) {
-      return { success: false, error: 'Not authenticated' };
-    }
-    
-    try {
-      const response = await fetch(`/api/bets/resolve?betId=${betId}`, {
-        headers: this.getHeaders(),
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        return { success: false, error: data.error };
-      }
-      
-      return { success: true, bet: data.bet };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Network error' 
-      };
-    }
-  }
-  
-  /**
    * Place multiple bets in a single request (for drag mode)
    * Reduces HTTP overhead by ~90%
    */
@@ -286,7 +206,6 @@ export type {
   PlaceBetParams, 
   PlaceBetResponse, 
   PlaceBetBatchResponse,
-  ResolveBetResponse, 
   UserBalanceResponse 
 };
 

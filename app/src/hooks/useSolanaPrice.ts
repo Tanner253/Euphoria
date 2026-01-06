@@ -41,7 +41,8 @@ const PROVIDERS: Record<Provider, { url: string; parsePrice: (data: unknown) => 
 };
 
 // NORMALIZED OUTPUT: Fixed update interval for consistent game experience
-const NORMALIZED_OUTPUT_INTERVAL_MS = 100; // 10 updates per second max
+// 50ms = 20Hz for smoother visual updates while avoiding WebSocket rate issues
+const NORMALIZED_OUTPUT_INTERVAL_MS = 50;
 
 /**
  * Hook to get real-time Solana price from WebSocket
@@ -88,37 +89,26 @@ export function useSolanaPrice(options: UseSolanaPriceOptions = {}) {
   }, [provider]);
 
   // Process raw prices and output normalized values
+  // CONSISTENCY FIX: No smoothing here - let game engine handle it
+  // This ensures all devices get the same raw price data
   const processAndOutputPrice = useCallback(() => {
     const rawPrices = rawPricesRef.current;
     if (rawPrices.length === 0) return;
     
-    // NORMALIZATION: Use the latest price (most recent)
-    // For spiky feeds like Binance, we take the last value in the batch
-    // For smooth feeds like Coinbase, this is usually just 1 value
+    // CONSISTENCY: Use the latest price directly without smoothing
+    // Game engine applies its own time-normalized smoothing
+    // Double smoothing causes device-dependent behavior
     const latestPrice = rawPrices[rawPrices.length - 1];
-    
-    // Apply exponential smoothing for consistent output
-    // This dampens any remaining spikiness from high-frequency feeds
-    const SMOOTHING_FACTOR = 0.3; // Lower = smoother, higher = more responsive
-    
-    if (smoothedPriceRef.current === null) {
-      smoothedPriceRef.current = latestPrice;
-    } else {
-      smoothedPriceRef.current = smoothedPriceRef.current + 
-        SMOOTHING_FACTOR * (latestPrice - smoothedPriceRef.current);
-    }
     
     // Clear the raw prices buffer
     rawPricesRef.current = [];
     
-    // Output the smoothed price
-    const outputPrice = smoothedPriceRef.current;
-    
+    // Output the raw price - let game engine smooth it
     setPrice(currentPrice => {
-      if (currentPrice !== null && currentPrice !== outputPrice) {
+      if (currentPrice !== null && currentPrice !== latestPrice) {
         setPreviousPrice(currentPrice);
       }
-      return outputPrice;
+      return latestPrice;
     });
     
     lastOutputTimeRef.current = Date.now();

@@ -170,7 +170,7 @@ export function useAutoPlay({
       screenX: clampedVirtualX, 
       screenY: clampedVirtualY 
     };
-  }, [canvasRef, currentPrice, isMobile, analyzeTrend]);
+  }, [canvasRef, currentPrice, isMobile, zoomIndex, analyzeTrend]);
   
   // Auto-play loop - INFINITE GEMS mode (no balance check needed)
   useEffect(() => {
@@ -179,15 +179,15 @@ export function useAutoPlay({
     const interval = setInterval(() => {
       const now = Date.now();
       
-      // Human-like betting frequency: 3-8 seconds between bets (slower, more realistic)
-      const minDelay = 3000;
-      const maxDelay = 8000;
+      // Human-like betting frequency: 5-15 seconds between bets (much slower, realistic)
+      const minDelay = 5000;
+      const maxDelay = 15000;
       const randomDelay = minDelay + Math.random() * (maxDelay - minDelay);
       
       if (now - lastBetTimeRef.current < randomDelay) return;
       
-      // Skip sometimes (humans don't bet every possible moment) - 50% skip chance
-      if (Math.random() < 0.5) return;
+      // Skip sometimes (humans don't bet every possible moment) - 60% skip chance
+      if (Math.random() < 0.6) return;
       
       const betPosition = calculateBetPosition();
       if (!betPosition) return;

@@ -37,8 +37,11 @@ interface WalletContextType {
   connect: () => Promise<{ success: boolean; error?: string }>;
   disconnect: () => void;
   updateDemoBalance: (newBalance: number) => void;
-  updateGemsBalance: (newBalance: number) => void; // For optimistic updates from game
+  updateGemsBalance: (newBalance: number) => void; // For direct balance updates from socket
   refreshBalance: () => Promise<void>;
+  
+  // Socket-based balance update handler (called by useGameSocket)
+  handleBalanceUpdate: (newBalance: number, reason?: string) => void;
 }
 
 const WalletContext = createContext<WalletContextType | null>(null);
@@ -159,17 +162,9 @@ export function WalletProvider({ children }: WalletProviderProps) {
     }
   }, [authToken, fetchBalance]);
 
-  // Periodic balance sync for authenticated users (every 30 seconds)
-  // This catches any drift between client and server
-  useEffect(() => {
-    if (!isAuthenticated || !authToken) return;
-    
-    const interval = setInterval(() => {
-      fetchBalance(authToken);
-    }, 30000); // 30 seconds
-    
-    return () => clearInterval(interval);
-  }, [isAuthenticated, authToken, fetchBalance]);
+  // NOTE: Balance updates now primarily come via Socket.io (useGameSocket)
+  // The socket emits 'balanceUpdate' events which should call handleBalanceUpdate
+  // No polling needed - socket is the source of truth for balance changes
 
   const connect = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
     setIsConnecting(true);
@@ -285,8 +280,14 @@ export function WalletProvider({ children }: WalletProviderProps) {
     setDemoBalance(newBalance);
   }, []);
 
-  // Update gems balance directly (for optimistic updates from game engine)
+  // Update gems balance directly (for socket-based updates)
   const updateGemsBalance = useCallback((newBalance: number) => {
+    setGemsBalance(newBalance);
+  }, []);
+  
+  // Handle balance update from socket (called by useGameSocket)
+  const handleBalanceUpdate = useCallback((newBalance: number, reason?: string) => {
+    console.log(`[Wallet] Balance update via socket: ${newBalance} gems${reason ? ` (${reason})` : ''}`);
     setGemsBalance(newBalance);
   }, []);
 
@@ -308,6 +309,7 @@ export function WalletProvider({ children }: WalletProviderProps) {
         updateDemoBalance,
         updateGemsBalance,
         refreshBalance,
+        handleBalanceUpdate,
       }}
     >
       {children}

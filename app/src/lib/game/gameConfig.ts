@@ -14,13 +14,16 @@ export const GAME_CONFIG = {
   
   // Grid speed based on volatility
   // Speed scales with price movement - always moves forward (never stops completely)
-  GRID_SPEED_ACTIVE: 0.8,      // Full speed during high volatility
-  GRID_SPEED_LOW: 0.15,        // Reduced speed during low volatility  
-  GRID_SPEED_IDLE: 0.06,       // Slow crawl during flatline (visible but slow)
+  GRID_SPEED_ACTIVE: 1,        // Full speed during high volatility
+  GRID_SPEED_LOW: 0.25,        // Reduced speed during low volatility  
+  GRID_SPEED_IDLE: 0.05,       // Slow crawl during flatline (visible but slow)
   GRID_SPEED_MIN: 0.03,        // Absolute minimum - always moves forward
   
   // Price visualization
-  PRICE_SCALE: 2500,
+  // Higher = more vertical movement per price change (harder during quiet periods)
+  PRICE_SCALE: 8000,
+  // Smoothing factor for price line movement (0.08 = smooth, 1 = instant/rigid)
+  // Lower values = smoother but laggier, higher = responsive but jerky
   PRICE_SMOOTHING: 0.08,
   // Flatline detection - more sensitive to catch low-volume periods
   FLATLINE_THRESHOLD: 0.003,   // Was 0.002 - detect flatlines earlier
