@@ -201,19 +201,29 @@ export default function PredictionMarket() {
       
       {/* Game Canvas - offset for sidebar */}
       <div className="absolute inset-0 z-10" style={{ left: sidebarWidth }}>
-        <canvas 
-          ref={canvasRef}
-          className="block cursor-crosshair"
-          style={{ 
-            width: `calc(100vw - ${sidebarWidth}px)`, 
-            height: '100vh',
-            touchAction: 'none'  // Critical for mobile touch handling
-          }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerLeave={handlePointerLeave}
-        />
+        {/* Only render canvas when server config is loaded */}
+        {configLoaded ? (
+          <canvas 
+            ref={canvasRef}
+            className="block cursor-crosshair"
+            style={{ 
+              width: `calc(100vw - ${sidebarWidth}px)`, 
+              height: '100vh',
+              touchAction: 'none'  // Critical for mobile touch handling
+            }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerLeave}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center">
+              <div className="animate-spin w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full mx-auto mb-4" />
+              <p className="text-pink-300/70 text-sm">Connecting to server...</p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Win notification - Clean minimal style */}

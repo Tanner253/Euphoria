@@ -66,7 +66,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     
     // Receive server config (SINGLE SOURCE OF TRUTH)
     newSocket.on('serverConfig', (config: ServerConfig) => {
-      console.log('[Socket] Received server config');
+      console.log('[Socket] Received server config:', config ? 'valid' : 'null', 'cellSize:', config?.cellSize);
       setServerConfig(config);
     });
     

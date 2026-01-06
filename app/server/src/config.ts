@@ -23,16 +23,16 @@ export const SERVER_CONFIG = {
   ZOOM_LABELS: ['Low Risk', 'Medium', 'High Risk'] as const,
   
   // Grid speed based on volatility
-  GRID_SPEED_ACTIVE: 1,
-  GRID_SPEED_LOW: 0.25,
-  GRID_SPEED_IDLE: 0.05,
-  GRID_SPEED_MIN: 0.03,
+  GRID_SPEED_ACTIVE: 2,
+  GRID_SPEED_LOW: 0.5,
+  GRID_SPEED_IDLE: 0.2,
+  GRID_SPEED_MIN: 0.2,
   
   // Price visualization
   PRICE_SCALE: 8000,
   
   // Betting rules
-  MIN_BET_COLUMNS_AHEAD: 8,         // Desktop: force bets further ahead
+  MIN_BET_COLUMNS_AHEAD: 6,         // Desktop: force bets further ahead
   MIN_BET_COLUMNS_AHEAD_MOBILE: 5,  // Mobile: fewer columns due to screen width
   BET_AMOUNT_OPTIONS: [10, 25, 50, 100] as const,
   BET_AMOUNT_OPTIONS_MOBILE: [1, 5, 10] as const,
@@ -79,9 +79,9 @@ export const SERVER_CONFIG = {
   SIDEBAR_WIDTH_MOBILE: 44,
   MOBILE_CAMERA_SCALE: 0.55,
   
-  // House edge (subtle - should not be visibly obvious)
-  // MUST MATCH CLIENT GAME_CONFIG.WIN_ZONE_MARGIN
-  WIN_ZONE_MARGIN: 0.15,
+  // Win zone margin - 0 means entire cell is win zone
+  // Set to 0.15 (15%) to shrink hitbox for house edge
+  WIN_ZONE_MARGIN: 0,  // FULL CELL = WIN ZONE (no margin)
   BET_AVOIDANCE_STRENGTH: 0.225,  // Matches client
   BET_AVOIDANCE_CAP: 0.45,        // Matches client
   

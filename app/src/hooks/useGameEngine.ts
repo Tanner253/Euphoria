@@ -909,6 +909,7 @@ export function useGameEngine({
   // Sync serverConfigRef with context when config arrives
   useEffect(() => {
     if (contextServerConfig) {
+      console.log('[GameEngine] Syncing server config from context, cellSize:', contextServerConfig.cellSize);
       serverConfigRef.current = contextServerConfig;
       setConfigLoaded(true);
     }
@@ -1017,17 +1018,28 @@ export function useGameEngine({
     socketRef.current = socket;
     console.log('[GameEngine] Using shared socket connection');
     
+    // Get current zoom level from config
+    const cfg = serverConfigRef.current;
+    const currentZoomLevel = cfg?.zoomLevels[zoomIndex] ?? 1.0;
+    
     // Identify wallet for authenticated bet placement
+    // Also send zoom level so server can track it (SERVER-AUTHORITATIVE)
     if (walletAddress) {
-      socket.emit('identify', { walletAddress });
-      console.log('[GameEngine] Identified wallet:', walletAddress.slice(0, 8));
+      socket.emit('identify', { walletAddress, isMobile, zoomLevel: currentZoomLevel });
+      console.log('[GameEngine] Identified wallet:', walletAddress.slice(0, 8), 'zoom:', currentZoomLevel);
+    } else {
+      // Even without wallet, tell server our zoom preference
+      socket.emit('setZoom', { zoomLevel: currentZoomLevel, isMobile });
     }
     
     // Note: serverConfig is handled by SocketContext and synced via useEffect above
     
     // ========== RECEIVE AUTHORITATIVE GAME STATE FROM SERVER ==========
     // Server is the single source of truth - client just renders
+    // Each zoom level has its own grid - server sends the grid matching our zoom level
     socket.on('gameState', (serverState: { 
+      zoomLevel: number;       // Which grid this state is for
+      cellSize: number;        // Server-authoritative cell size for this grid
       priceY: number;
       targetPriceY: number;
       offsetX: number;
@@ -1041,6 +1053,14 @@ export function useGameEngine({
       serverTime: number;
     }) => {
       const state = stateRef.current;
+      const cfg = serverConfigRef.current;
+      
+      // Verify this state is for our current zoom level (should always match)
+      const currentZoomLevel = cfg?.zoomLevels[zoomIndex] ?? 1.0;
+      if (serverState.zoomLevel !== undefined && Math.abs(serverState.zoomLevel - currentZoomLevel) > 0.01) {
+        // State is for a different grid - ignore (can happen during zoom transition)
+        return;
+      }
       
       // Store server targets for smooth interpolation
       serverStateRef.current = {
@@ -1075,7 +1095,7 @@ export function useGameEngine({
         heatmapRef.current = newHeatmap;
       }
       
-      // Track server bets (from other players)
+      // Track server bets (from other players on this grid)
       if (serverState.bets) {
         serverBetsRef.current = serverState.bets;
       }
@@ -1089,21 +1109,28 @@ export function useGameEngine({
       }
     });
     
-    // When another player places a bet, it shows on our heatmap via gameState updates
-    socket.on('betPlaced', (bet: ServerBetData) => {
-      console.log('[GameEngine] Bet placed by', bet.walletAddress?.slice(0, 8));
+    // When another player places a bet on the same grid, it shows via gameState updates
+    socket.on('betPlaced', (bet: ServerBetData & { zoomLevel?: number }) => {
+      // Only log bets on our grid
+      const cfg = serverConfigRef.current;
+      const currentZoomLevel = cfg?.zoomLevels[zoomIndex] ?? 1.0;
+      if (bet.zoomLevel !== undefined && Math.abs(bet.zoomLevel - currentZoomLevel) > 0.01) {
+        return; // Different grid
+      }
+      console.log('[GameEngine] Bet placed by', bet.walletAddress?.slice(0, 8), 'on grid', bet.zoomLevel);
     });
     
     // ========== SERVER CONFIRMATION OF BET RESOLUTION ==========
     // Client resolves optimistically, server confirms or corrects
     socket.on('betResolved', (data: {
-      bet: { id: string; colId: string; yIndex: number; wager: number; payout: number; walletAddress: string; status: string };
+      bet: { id: string; colId: string; yIndex: number; wager: number; payout: number; walletAddress: string; status: string; zoomLevel?: number };
       won: boolean;
       dbBetId?: string;
       actualWin?: number;
       newBalance?: number;
+      zoomLevel?: number;
     }) => {
-      console.log('[GameEngine] Server confirmed bet:', data.bet.id, data.won ? 'WON' : 'LOST', 'dbBetId:', data.dbBetId);
+      console.log('[GameEngine] Server confirmed bet:', data.bet.id, data.won ? 'WON' : 'LOST', 'grid:', data.zoomLevel, 'dbBetId:', data.dbBetId);
       
       // Find our local bet that matches this server bet
       // Match by serverId (database bet ID) if available
@@ -1399,7 +1426,10 @@ export function useGameEngine({
 
   const placeBetAt = useCallback(async (screenX: number, screenY: number, allowDuplicate = false) => {
     const cfg = serverConfigRef.current;
-    if (!cfg) return false; // Config not loaded yet
+    if (!cfg) {
+      console.warn('[GameEngine] placeBetAt blocked - config not loaded');
+      return false;
+    }
     
     const currentBalance = balanceRef.current;
     const currentBetAmount = betAmountRef.current;
@@ -2259,47 +2289,23 @@ export function useGameEngine({
           ctx.fillText(`-${bet.amount}`, centerX, centerY + 16);
         }
         
-        // DEBUG: Win zone indicator (cyan corners) - commented out for production
-        // Uncomment to visualize the shrunk win zone during debugging
-        /*
-        if (bet.winPriceMin !== undefined && bet.winPriceMax !== undefined && bet.basePriceAtBet !== undefined && bet.status === 'pending') {
-          const winYTop = -(bet.winPriceMax - bet.basePriceAtBet) * config.priceScale + cellSize / 2;
-          const winYBottom = -(bet.winPriceMin - bet.basePriceAtBet) * config.priceScale + cellSize / 2;
-          
-          // Draw simple corner markers (fast)
+        // DEBUG: Win zone indicator - shows hitbox for pending bets
+        // With WIN_ZONE_MARGIN=0, the entire cell is the win zone
+        if (isPending) {
           ctx.strokeStyle = '#00ffff';
           ctx.lineWidth = 2;
-          const cornerSize = 6;
+          ctx.setLineDash([4, 2]);
+          ctx.strokeRect(screenX + 1, y + 1, cellSize - 2, cellSize - 2);
+          ctx.setLineDash([]);
           
-          // Top-left corner
-          ctx.beginPath();
-          ctx.moveTo(screenX, winYTop + cornerSize);
-          ctx.lineTo(screenX, winYTop);
-          ctx.lineTo(screenX + cornerSize, winYTop);
-          ctx.stroke();
-          
-          // Top-right corner
-          ctx.beginPath();
-          ctx.moveTo(screenX + cellSize - cornerSize, winYTop);
-          ctx.lineTo(screenX + cellSize, winYTop);
-          ctx.lineTo(screenX + cellSize, winYTop + cornerSize);
-          ctx.stroke();
-          
-          // Bottom-left corner
-          ctx.beginPath();
-          ctx.moveTo(screenX, winYBottom - cornerSize);
-          ctx.lineTo(screenX, winYBottom);
-          ctx.lineTo(screenX + cornerSize, winYBottom);
-          ctx.stroke();
-          
-          // Bottom-right corner
-          ctx.beginPath();
-          ctx.moveTo(screenX + cellSize - cornerSize, winYBottom);
-          ctx.lineTo(screenX + cellSize, winYBottom);
-          ctx.lineTo(screenX + cellSize, winYBottom - cornerSize);
-          ctx.stroke();
+          // DEBUG: Show yIndex and cell Y range on the cell
+          ctx.fillStyle = '#00ffff';
+          ctx.font = '10px monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`y=${bet.yIndex}`, screenX + 4, y + 12);
+          ctx.fillText(`${bet.yIndex * cellSize}-${(bet.yIndex + 1) * cellSize}`, screenX + 4, y + 24);
+          ctx.textAlign = 'center';
         }
-        */
       });
       
       // ✨ SPECIAL CELLS - Render with glowing rainbow effect
@@ -2441,6 +2447,15 @@ export function useGameEngine({
         // Mobile circles larger to compensate for camera zoom-out
         ctx.arc(headX, state.priceY, isMobile ? 4 : 3, 0, Math.PI * 2);
         ctx.fill();
+        
+        // DEBUG: Show priceY coordinate and which cell it's in
+        const priceYCell = Math.floor(state.priceY / cellSize);
+        ctx.fillStyle = '#00ffff';
+        ctx.font = 'bold 11px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`priceY=${state.priceY.toFixed(1)}`, headX + 15, state.priceY - 10);
+        ctx.fillText(`cell=${priceYCell} (${priceYCell * cellSize}-${(priceYCell + 1) * cellSize})`, headX + 15, state.priceY + 5);
+        ctx.textAlign = 'center';
         
         // === CHAT BUBBLE above price head ===
         const chatBubble = chatBubbleRef.current;
@@ -2612,7 +2627,7 @@ export function useGameEngine({
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- TARGET_FRAME_MS is a constant, zoomLevel is covered by getCellSize
-  }, [generateColumn, playSound, getCellSize, getHeadX, getPriceAxisWidth, isMobile, onBalanceChange, onTotalWonChange, onTotalLostChange, onWin]);
+  }, [configLoaded, generateColumn, playSound, getCellSize, getHeadX, getPriceAxisWidth, isMobile, onBalanceChange, onTotalWonChange, onTotalLostChange, onWin]);
 
   // Resize handler - dynamic canvas sizing
   useEffect(() => {
@@ -2673,7 +2688,10 @@ export function useGameEngine({
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const cfg = serverConfigRef.current;
-    if (!cfg) return; // Wait for config
+    if (!cfg) {
+      console.warn('[GameEngine] handlePointerDown blocked - config not loaded');
+      return;
+    }
     
     setIsDragging(true);
     isDraggingRef.current = true;
@@ -2862,6 +2880,17 @@ export function useGameEngine({
     if (!serverConfigRef.current) return; // Wait for server config
     setZoomIndex(prev => (prev + 1) % serverConfigRef.current!.zoomLevels.length);
   }, [isMobile]);
+  
+  // SERVER-AUTHORITATIVE: Notify server when zoom changes
+  useEffect(() => {
+    const socket = socketRef.current;
+    const cfg = serverConfigRef.current;
+    if (!socket?.connected || !cfg) return;
+    
+    const newZoomLevel = cfg.zoomLevels[zoomIndex] ?? 1.0;
+    socket.emit('setZoom', { zoomLevel: newZoomLevel, isMobile });
+    console.log('[GameEngine] Sent zoom to server:', newZoomLevel);
+  }, [zoomIndex, isMobile]);
 
   return {
     canvasRef,

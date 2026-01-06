@@ -27,7 +27,7 @@ import { Server as SocketIOServer, Socket } from 'socket.io';
 import cors from 'cors';
 
 import { SERVER_CONFIG, getClientConfig } from './config.js';
-import { GameEngine, Bet } from './gameEngine.js';
+import { MultiGridGameEngine, Bet } from './gameEngine.js';
 import { PriceService } from './priceService.js';
 import { 
   setPlayerOnline, 
@@ -71,20 +71,24 @@ const io = new SocketIOServer(httpServer, {
   transports: ['websocket', 'polling'],
 });
 
-// ============ GAME ENGINE ============
+// ============ MULTI-GRID GAME ENGINE ============
 
 // Track active bets that need database resolution
-const pendingDbBets = new Map<string, { dbBetId: string; walletAddress: string }>();
+// Key: game bet ID, Value: { dbBetId, walletAddress, zoomLevel }
+const pendingDbBets = new Map<string, { dbBetId: string; walletAddress: string; zoomLevel: number }>();
 
-// Create game engine with bet resolution callback
-const gameEngine = new GameEngine(async (bet, won) => {
+// Create multi-grid game engine (3 grids, one per zoom level)
+// Each grid is independent with its own coordinate system
+const gameEngine = new MultiGridGameEngine(async (bet, won, zoomLevel) => {
+  console.log(`[Server] Bet resolved on grid ${zoomLevel}x: ${bet.id} - ${won ? 'WON' : 'LOST'}`);
+  
   // Find the database bet ID for this game bet
   const dbBetInfo = pendingDbBets.get(bet.id);
   
   if (dbBetInfo) {
     try {
       // Resolve bet in database and get updated balance
-      const priceAtResolution = gameEngine.getFullState().currentPrice || 0;
+      const priceAtResolution = gameEngine.getFullState(zoomLevel).currentPrice || 0;
       const betService = BetServiceServer.getInstance();
       const result = await betService.resolveBet(dbBetInfo.dbBetId, won, priceAtResolution);
       
@@ -104,6 +108,7 @@ const gameEngine = new GameEngine(async (bet, won) => {
               dbBetId: dbBetInfo.dbBetId,
               actualWin: won ? bet.payout : 0,
               newBalance: result.newBalance,
+              zoomLevel,
             });
           }
         }
@@ -116,7 +121,7 @@ const gameEngine = new GameEngine(async (bet, won) => {
       // Still notify the player
       for (const [socketId, clientData] of connectedClients.entries()) {
         if (clientData.walletAddress === bet.walletAddress) {
-          io.to(socketId).emit('betResolved', { bet, won, error: 'Database error' });
+          io.to(socketId).emit('betResolved', { bet, won, error: 'Database error', zoomLevel });
         }
       }
     }
@@ -124,7 +129,7 @@ const gameEngine = new GameEngine(async (bet, won) => {
     // Demo bet (no database entry) - just broadcast result
     for (const [socketId, clientData] of connectedClients.entries()) {
       if (clientData.walletAddress === bet.walletAddress) {
-        io.to(socketId).emit('betResolved', { bet, won });
+        io.to(socketId).emit('betResolved', { bet, won, zoomLevel });
       }
     }
   }
@@ -161,7 +166,8 @@ const priceService = new PriceService({
 interface ClientData {
   walletAddress?: string;
   isMobile: boolean;
-  zoomLevel: number;
+  zoomLevel: number;  // Server-authoritative zoom level for this client
+  cellSize: number;   // Calculated from zoomLevel - used for ALL bet calculations
   isAdmin?: boolean;
 }
 
@@ -191,17 +197,20 @@ async function broadcastAdminUpdate() {
 io.on('connection', (socket: Socket) => {
   console.log(`[Socket] Client connected: ${socket.id}`);
   
-  // Initialize client data
+  // Initialize client data with default zoom
+  const defaultZoom = SERVER_CONFIG.ZOOM_LEVELS[0]; // Default to first zoom level (2.0x)
+  const defaultCellSize = Math.floor(SERVER_CONFIG.CELL_SIZE * defaultZoom);
   connectedClients.set(socket.id, {
     isMobile: false,
-    zoomLevel: 1.0,
+    zoomLevel: defaultZoom,
+    cellSize: defaultCellSize,
   });
   
   // Send server config to client (single source of truth)
   socket.emit('serverConfig', getClientConfig());
   
-  // Send initial state immediately
-  socket.emit('gameState', gameEngine.getCompactState());
+  // Send initial state for client's zoom level grid
+  socket.emit('gameState', gameEngine.getCompactState(defaultZoom));
   
   // Send initial leaderboard (async)
   getLeaderboardData().then(data => {
@@ -219,9 +228,14 @@ io.on('connection', (socket: Socket) => {
         setPlayerOnline(clientData.walletAddress, false);
       }
       
+      const isMobile = data.isMobile || false;
+      const zoomLevel = data.zoomLevel || 1.0;
+      const baseCellSize = isMobile ? SERVER_CONFIG.CELL_SIZE_MOBILE : SERVER_CONFIG.CELL_SIZE;
+      
       clientData.walletAddress = data.walletAddress;
-      clientData.isMobile = data.isMobile || false;
-      clientData.zoomLevel = data.zoomLevel || 1.0;
+      clientData.isMobile = isMobile;
+      clientData.zoomLevel = zoomLevel;
+      clientData.cellSize = Math.floor(baseCellSize * zoomLevel);  // SERVER calculates
       
       // Mark new wallet as online and broadcast updated leaderboard
       if (data.walletAddress) {
@@ -287,15 +301,27 @@ io.on('connection', (socket: Socket) => {
     }
   });
   
-  // Client updates their zoom level
-  socket.on('setZoom', (zoomLevel: number) => {
+  // Client updates their zoom level - switch to that zoom's grid
+  socket.on('setZoom', (data: { zoomLevel: number; isMobile?: boolean }) => {
     const clientData = connectedClients.get(socket.id);
     if (clientData) {
+      const zoomLevel = data.zoomLevel;
+      const isMobile = data.isMobile ?? clientData.isMobile;
+      const baseCellSize = isMobile ? SERVER_CONFIG.CELL_SIZE_MOBILE : SERVER_CONFIG.CELL_SIZE;
+      
       clientData.zoomLevel = zoomLevel;
+      clientData.isMobile = isMobile;
+      clientData.cellSize = Math.floor(baseCellSize * zoomLevel);
+      
+      console.log(`[Socket] Client ${socket.id} switched to grid ${zoomLevel}x, cellSize: ${clientData.cellSize}`);
+      
+      // Send the new grid's state immediately so client can render correctly
+      socket.emit('gameState', gameEngine.getCompactState(zoomLevel));
     }
   });
   
   // Client places a bet (with full database integration)
+  // Bet is routed to the correct grid based on client's zoom level
   socket.on('placeBet', async (betData: {
     colId: string;
     yIndex: number;
@@ -304,7 +330,7 @@ io.on('connection', (socket: Socket) => {
     oddsMultiplier: string;
     sessionId?: string;
     basePrice?: number;
-    cellSize?: number;
+    cellSize?: number;  // IGNORED - server uses grid's cellSize
     clientOffsetX?: number; // Client's world offset for sync
     useDatabase?: boolean; // If false, demo mode (no database)
   }, callback: (response: { success: boolean; bet?: Bet; error?: string; newBalance?: number; dbBetId?: string }) => void) => {
@@ -317,12 +343,18 @@ io.on('connection', (socket: Socket) => {
     
     const multiplier = parseFloat(betData.oddsMultiplier);
     const payout = betData.wager * multiplier;
-    const gameState = gameEngine.getFullState();
+    
+    // Get the client's zoom level and corresponding grid
+    const zoomLevel = clientData.zoomLevel;
+    const gameState = gameEngine.getFullState(zoomLevel);
     const currentPrice = gameState.currentPrice || 0;
+    
+    // Use the grid's cellSize - consistent coordinate system
+    const cellSize = clientData.cellSize;
     
     // Sync server offsetX with client if they're ahead
     if (betData.clientOffsetX !== undefined && betData.clientOffsetX > gameState.offsetX) {
-      gameEngine.syncOffsetX(betData.clientOffsetX);
+      gameEngine.syncOffsetX(zoomLevel, betData.clientOffsetX);
     }
     
     // If useDatabase is true (default for authenticated users), validate and record in database
@@ -330,8 +362,7 @@ io.on('connection', (socket: Socket) => {
       try {
         const betService = BetServiceServer.getInstance();
         
-        // Calculate win price boundaries (grid-aligned)
-        const cellSize = betData.cellSize || SERVER_CONFIG.CELL_SIZE;
+        // Calculate win price boundaries using SERVER's tracked cellSize
         const basePrice = betData.basePrice || currentPrice;
         
         const cellYTop = betData.yIndex * cellSize;
@@ -366,9 +397,9 @@ io.on('connection', (socket: Socket) => {
           return;
         }
         
-        // Now place in game engine for visual tracking
+        // Now place in game engine for visual tracking (on the correct grid)
         const gameBetId = `bet_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const bet = gameEngine.placeBet({
+        const bet = gameEngine.placeBet(zoomLevel, {
           id: gameBetId,
           colId: betData.colId,
           yIndex: betData.yIndex,
@@ -384,6 +415,7 @@ io.on('connection', (socket: Socket) => {
           pendingDbBets.set(gameBetId, {
             dbBetId: dbResult.bet!._id!.toString(),
             walletAddress: clientData.walletAddress,
+            zoomLevel,  // Track which grid the bet is on
           });
           
           // Send balance update to client
@@ -423,7 +455,8 @@ io.on('connection', (socket: Socket) => {
       }
     } else {
       // Demo mode - no database, just game engine
-      const bet = gameEngine.placeBet({
+      // Place on the correct grid for this zoom level
+      const bet = gameEngine.placeBet(zoomLevel, {
         id: `bet_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         colId: betData.colId,
         yIndex: betData.yIndex,
@@ -435,7 +468,8 @@ io.on('connection', (socket: Socket) => {
       });
       
       if (bet) {
-        io.emit('betPlaced', bet);
+        // Broadcast bet to clients on the same grid
+        io.emit('betPlaced', { ...bet, zoomLevel });
         callback({ success: true, bet });
       } else {
         callback({ success: false, error: 'Invalid bet placement' });
@@ -467,14 +501,17 @@ io.on('connection', (socket: Socket) => {
   ) => {
     const clientData = connectedClients.get(socket.id);
     
-    // Sync offsetX with client
-    if (batchData.clientOffsetX !== undefined) {
-      gameEngine.syncOffsetX(batchData.clientOffsetX);
-    }
-    
     if (!clientData) {
       callback({ success: false, results: [], error: 'Not connected' });
       return;
+    }
+    
+    // Get client's zoom level and corresponding grid
+    const zoomLevel = clientData.zoomLevel;
+    
+    // Sync offsetX with client on the correct grid
+    if (batchData.clientOffsetX !== undefined) {
+      gameEngine.syncOffsetX(zoomLevel, batchData.clientOffsetX);
     }
     
     const results: Array<{ index: number; success: boolean; betId?: string; gameBetId?: string; error?: string }> = [];
@@ -485,9 +522,10 @@ io.on('connection', (socket: Socket) => {
       try {
         const betService = BetServiceServer.getInstance();
         const userService = UserServiceServer.getInstance();
-        const state = gameEngine.getFullState();
+        const state = gameEngine.getFullState(zoomLevel);
         const basePrice = state.currentPrice || 0;
-        const cellSize = clientData.zoomLevel ? Math.floor(60 * clientData.zoomLevel) : 60;
+        // Use grid's cellSize
+        const cellSize = clientData.cellSize;
         
         // Validate total amount
         const totalAmount = batchData.bets.reduce((sum, b) => sum + b.wager, 0);
@@ -511,13 +549,12 @@ io.on('connection', (socket: Socket) => {
           const multiplier = parseFloat(betData.oddsMultiplier) || 1.5;
           const payout = betData.wager * multiplier;
           
-          // Calculate win boundaries
-          const betCellSize = betData.cellSize || cellSize;
+          // Calculate win boundaries using SERVER's tracked cellSize
           const betBasePrice = betData.basePrice || basePrice;
-          const cellYTop = betData.yIndex * betCellSize;
-          const cellYBottom = (betData.yIndex + 1) * betCellSize;
-          const winPriceMax = betBasePrice + (betCellSize / 2 - cellYTop) / SERVER_CONFIG.PRICE_SCALE;
-          const winPriceMin = betBasePrice + (betCellSize / 2 - cellYBottom) / SERVER_CONFIG.PRICE_SCALE;
+          const cellYTop = betData.yIndex * cellSize;
+          const cellYBottom = (betData.yIndex + 1) * cellSize;
+          const winPriceMax = betBasePrice + (cellSize / 2 - cellYTop) / SERVER_CONFIG.PRICE_SCALE;
+          const winPriceMin = betBasePrice + (cellSize / 2 - cellYBottom) / SERVER_CONFIG.PRICE_SCALE;
           
           // Place in database
           const dbResult = await betService.placeBet({
@@ -528,7 +565,7 @@ io.on('connection', (socket: Socket) => {
             columnId: betData.colId,
             yIndex: betData.yIndex,
             basePrice: betBasePrice,
-            cellSize: betCellSize,
+            cellSize,  // SERVER's tracked cellSize
             priceAtBet: betBasePrice,
             winPriceMin,
             winPriceMax,
@@ -560,13 +597,13 @@ io.on('connection', (socket: Socket) => {
           }
         }
         
-        // Add all successful bets to game engine
+        // Add all successful bets to game engine (on the correct grid)
         for (const betInfo of betsToAddToEngine) {
           const betData = betInfo.betData;
           const multiplier = parseFloat(betData.oddsMultiplier) || 1.5;
           const payout = betData.wager * multiplier;
           
-          const bet = gameEngine.placeBet({
+          const bet = gameEngine.placeBet(zoomLevel, {
             id: betInfo.gameBetId,
             colId: betData.colId,
             yIndex: betData.yIndex,
@@ -581,8 +618,9 @@ io.on('connection', (socket: Socket) => {
             pendingDbBets.set(betInfo.gameBetId, {
               dbBetId: betInfo.dbBetId,
               walletAddress: clientData.walletAddress,
+              zoomLevel,
             });
-            io.emit('betPlaced', bet);
+            io.emit('betPlaced', { ...bet, zoomLevel });
           }
         }
         
@@ -597,14 +635,14 @@ io.on('connection', (socket: Socket) => {
         callback({ success: false, results: [], error: 'Database error' });
       }
     } else {
-      // Demo mode - just add to game engine
+      // Demo mode - just add to game engine on the correct grid
       for (let i = 0; i < batchData.bets.length; i++) {
         const betData = batchData.bets[i];
         const multiplier = parseFloat(betData.oddsMultiplier) || 1.5;
         const payout = betData.wager * multiplier;
         const gameBetId = `bet_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 9)}`;
         
-        const bet = gameEngine.placeBet({
+        const bet = gameEngine.placeBet(zoomLevel, {
           id: gameBetId,
           colId: betData.colId,
           yIndex: betData.yIndex,
@@ -616,7 +654,7 @@ io.on('connection', (socket: Socket) => {
         });
         
         if (bet) {
-          io.emit('betPlaced', bet);
+          io.emit('betPlaced', { ...bet, zoomLevel });
           results.push({ index: i, success: true, betId: gameBetId });
         } else {
           results.push({ index: i, success: false, error: 'Invalid placement' });
@@ -629,7 +667,9 @@ io.on('connection', (socket: Socket) => {
   
   // Client requests full state (reconnection)
   socket.on('requestState', () => {
-    socket.emit('gameState', gameEngine.getCompactState());
+    const clientData = connectedClients.get(socket.id);
+    const zoomLevel = clientData?.zoomLevel || SERVER_CONFIG.ZOOM_LEVELS[0];
+    socket.emit('gameState', gameEngine.getCompactState(zoomLevel));
   });
   
   // Subscribe to leaderboard updates
@@ -789,15 +829,33 @@ const BROADCAST_INTERVAL = SERVER_CONFIG.TICK_MS; // ~16.67ms for 60fps
 const LEADERBOARD_BROADCAST_INTERVAL = 5000; // 5 seconds
 
 function gameLoop(): void {
-  // Tick the game engine
+  // Tick ALL grids in the multi-grid engine
   gameEngine.tick();
   
   const now = Date.now();
   
   // Broadcast game state at target rate
+  // Each client receives the state for THEIR zoom level's grid
   if (now - lastBroadcast >= BROADCAST_INTERVAL) {
-    const state = gameEngine.getCompactState();
-    io.emit('gameState', state);
+    // Group clients by zoom level for efficient broadcasting
+    const clientsByZoom = new Map<number, string[]>();
+    
+    for (const [socketId, clientData] of connectedClients.entries()) {
+      const zoomLevel = clientData.zoomLevel;
+      if (!clientsByZoom.has(zoomLevel)) {
+        clientsByZoom.set(zoomLevel, []);
+      }
+      clientsByZoom.get(zoomLevel)!.push(socketId);
+    }
+    
+    // Broadcast each zoom level's state to its subscribers
+    for (const [zoomLevel, socketIds] of clientsByZoom) {
+      const state = gameEngine.getCompactState(zoomLevel);
+      for (const socketId of socketIds) {
+        io.to(socketId).emit('gameState', state);
+      }
+    }
+    
     lastBroadcast = now;
   }
   

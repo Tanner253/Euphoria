@@ -33,6 +33,7 @@ export interface Bet {
   payout: number;
   colId: string;
   yIndex: number;
+  zoomLevel: number;  // Which zoom level grid this bet was placed on
   status: 'placing' | 'pending' | 'won' | 'lost' | 'expired';
   walletAddress: string;
   placedAt: number;
@@ -78,13 +79,23 @@ export interface GameState {
 
 // ============ GAME ENGINE CLASS ============
 
-export type BetResolvedCallback = (bet: Bet, won: boolean) => void;
+export type BetResolvedCallback = (bet: Bet, won: boolean, zoomLevel: number) => void;
 
+/**
+ * GameEngine - Manages a single grid at a specific zoom level
+ * 
+ * Each zoom level gets its own independent grid with:
+ * - Its own cellSize (based on zoom)
+ * - Its own priceY coordinate system
+ * - Its own columns and bets
+ * - Shared price feed (converted to this grid's scale)
+ */
 export class GameEngine {
   private state: GameState;
   private priceBuffer: number[] = [];
   private lastTickTime: number = Date.now();
-  private cellSize: number = SERVER_CONFIG.CELL_SIZE;
+  private cellSize: number;
+  private zoomLevel: number;
   private onBetResolved?: BetResolvedCallback;
   
   // === PRICE SMOOTHING STATE ===
@@ -94,7 +105,14 @@ export class GameEngine {
   private lastPriceY: number = 0;                   // For velocity calculation
   private lastStableYIndex: number = 0;             // Last stable cell index (dead zone)
   
-  constructor(onBetResolved?: BetResolvedCallback) {
+  /**
+   * @param zoomLevel - The zoom level this grid represents (2.0, 1.0, 0.75)
+   * @param cellSize - Cell size for this grid (baseCellSize * zoomLevel)
+   * @param onBetResolved - Callback when a bet is resolved
+   */
+  constructor(zoomLevel: number, cellSize: number, onBetResolved?: BetResolvedCallback) {
+    this.zoomLevel = zoomLevel;
+    this.cellSize = cellSize;
     this.onBetResolved = onBetResolved;
     this.state = {
       priceY: this.cellSize / 2,
@@ -114,6 +132,22 @@ export class GameEngine {
     
     // Initialize starting columns
     this.initializeColumns();
+    
+    console.log(`[GameEngine] Created grid for zoom ${zoomLevel}x with cellSize ${cellSize}`);
+  }
+  
+  /**
+   * Get the zoom level this grid represents
+   */
+  getZoomLevel(): number {
+    return this.zoomLevel;
+  }
+  
+  /**
+   * Get the cell size for this grid
+   */
+  getCellSize(): number {
+    return this.cellSize;
   }
   
   /**
@@ -214,19 +248,23 @@ export class GameEngine {
     return Math.random().toString(36).substr(2, 9);
   }
   
-  private calculateMultiplier(yIndex: number, currentPriceIndex: number, zoomLevel: number = 1.0): string {
+  private calculateMultiplier(yIndex: number, currentPriceIndex: number): string {
     const dist = Math.abs(yIndex - currentPriceIndex);
     
+    // Use this grid's zoom level for multiplier calculation
     let baseMultiplier: number;
     let minMultiplier: number;
     
-    if (zoomLevel >= 1.5) {
+    if (this.zoomLevel >= 1.5) {
+      // Low risk (large cells) - lower multipliers
       baseMultiplier = 0.435;
       minMultiplier = 1.15;
-    } else if (zoomLevel >= 0.9) {
+    } else if (this.zoomLevel >= 0.9) {
+      // Medium risk - medium multipliers
       baseMultiplier = 0.5625;
       minMultiplier = 1.12;
     } else {
+      // High risk (small cells) - higher multipliers
       baseMultiplier = 0.75;
       minMultiplier = 1.50;
     }
@@ -450,6 +488,7 @@ export class GameEngine {
       const col = this.state.columns.find(c => c.id === bet.colId);
       if (!col) continue;
       
+      // Use THIS GRID's cellSize - all bets share the same coordinate system
       // Only consider bets 1-4 columns ahead
       const columnsAhead = (col.x - currentWorldX) / this.cellSize;
       if (columnsAhead < 0.5 || columnsAhead > 4) continue;
@@ -500,66 +539,86 @@ export class GameEngine {
     const headX = SERVER_CONFIG.HEAD_X;
     const currentWorldX = this.state.offsetX + headX;
     
+    // STEP 1: Group pending bets by column ID
+    const betsByColumn = new Map<string, Bet[]>();
     for (const bet of this.state.bets) {
       if (bet.status !== 'pending') continue;
       
-      const col = this.state.columns.find(c => c.id === bet.colId);
+      const existing = betsByColumn.get(bet.colId) || [];
+      existing.push(bet);
+      betsByColumn.set(bet.colId, existing);
+    }
+    
+    // STEP 2: For each column with pending bets, check if we've passed it
+    for (const [colId, betsInColumn] of betsByColumn) {
+      const col = this.state.columns.find(c => c.id === colId);
       if (!col) continue;
       
-      // Check if price line has fully crossed this column (past the right edge)
+      // Check if price line has fully crossed this column
       const colEndX = col.x + this.cellSize;
-      if (currentWorldX > colEndX) {
-        // Find the Y range the price line traveled through while in this column
-        // This allows wins when price TOUCHED the cell at ANY point
-        const colStartX = col.x;
-        let minY = Infinity;
-        let maxY = -Infinity;
+      if (currentWorldX <= colEndX) continue; // Not yet passed
+      
+      // STEP 3: Calculate the Y range the price traveled through this column ONCE
+      const colStartX = col.x;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      
+      for (let i = 0; i < this.state.priceHistory.length - 1; i++) {
+        const p1 = this.state.priceHistory[i];
+        const p2 = this.state.priceHistory[i + 1];
         
-        for (let i = 0; i < this.state.priceHistory.length - 1; i++) {
-          const p1 = this.state.priceHistory[i];
-          const p2 = this.state.priceHistory[i + 1];
-          
-          // Check if this segment overlaps with the column
-          if (p2.x < colStartX || p1.x > colEndX) continue;
-          
-          // Get Y values at the boundaries of overlap
-          const segStartX = Math.max(p1.x, colStartX);
-          const segEndX = Math.min(p2.x, colEndX);
-          
-          // Interpolate Y at segment boundaries
+        // Check if this segment overlaps with the column
+        if (p2.x < colStartX || p1.x > colEndX) continue;
+        
+        // ALWAYS include both endpoints - captures VERTICAL movement
+        minY = Math.min(minY, p1.y, p2.y);
+        maxY = Math.max(maxY, p1.y, p2.y);
+        
+        // Also interpolate at column boundaries for partial overlaps
+        if (p2.x !== p1.x) {
           const getYAt = (x: number) => {
-            if (p2.x === p1.x) return p1.y;
             const t = (x - p1.x) / (p2.x - p1.x);
             return p1.y + t * (p2.y - p1.y);
           };
           
-          const y1 = getYAt(segStartX);
-          const y2 = getYAt(segEndX);
-          
-          minY = Math.min(minY, y1, y2);
-          maxY = Math.max(maxY, y1, y2);
+          if (p1.x < colStartX) {
+            const yAtStart = getYAt(colStartX);
+            minY = Math.min(minY, yAtStart);
+            maxY = Math.max(maxY, yAtStart);
+          }
+          if (p2.x > colEndX) {
+            const yAtEnd = getYAt(colEndX);
+            minY = Math.min(minY, yAtEnd);
+            maxY = Math.max(maxY, yAtEnd);
+          }
         }
-        
-        // If no price history found for this column, use current priceY as fallback
-        if (minY === Infinity) {
-          minY = this.state.priceY;
-          maxY = this.state.priceY;
-        }
-        
-        // Win zone check: did the price Y range overlap with the bet cell?
-        // Cell spans from (yIndex * cellSize) to ((yIndex + 1) * cellSize)
-        // Win zone is shrunk by margin on each side
+      }
+      
+      // Fallback if no price history
+      if (minY === Infinity) {
+        minY = this.state.priceY;
+        maxY = this.state.priceY;
+      }
+      
+      console.log(`[Grid ${this.zoomLevel}x][Column ${colId.slice(0,4)}] Price Y range: ${minY.toFixed(1)} - ${maxY.toFixed(1)} | ${betsInColumn.length} bets to check`);
+      
+      // STEP 4: Check ALL bets in this column against the Y range
+      // Use THIS GRID's cellSize - all bets in this grid share the same coordinate system
+      for (const bet of betsInColumn) {
         const margin = this.cellSize * SERVER_CONFIG.WIN_ZONE_MARGIN;
         const cellTopY = bet.yIndex * this.cellSize + margin;
         const cellBottomY = (bet.yIndex + 1) * this.cellSize - margin;
         
-        // Win if price range overlaps with cell's win zone
+        // Win if price range overlaps with cell
         const won = minY < cellBottomY && maxY > cellTopY;
+        
+        console.log(`  [Bet yIndex=${bet.yIndex}] Cell Y: ${cellTopY.toFixed(1)}-${cellBottomY.toFixed(1)} | ${won ? 'WIN ✓' : 'LOSS ✗'}`);
+        
         bet.status = won ? 'won' : 'lost';
         
-        // Emit bet resolved callback
+        // Emit callback for EACH bet with this grid's zoom level
         if (this.onBetResolved) {
-          this.onBetResolved(bet, won);
+          this.onBetResolved(bet, won, this.zoomLevel);
         }
       }
     }
@@ -569,12 +628,12 @@ export class GameEngine {
    * Place a bet (called from Socket handler)
    * colId is the column's world X position from the client
    */
-  placeBet(bet: Omit<Bet, 'status' | 'placedAt'>): Bet | null {
+  placeBet(bet: Omit<Bet, 'status' | 'placedAt' | 'zoomLevel'>): Bet | null {
     // Parse X position from colId
     const targetX = parseFloat(bet.colId);
     if (isNaN(targetX)) return null;
     
-    // Snap to grid
+    // Snap to this grid's cell size
     const snappedX = Math.round(targetX / this.cellSize) * this.cellSize;
     
     // Find or create column at this position
@@ -588,16 +647,19 @@ export class GameEngine {
       this.state.columns.sort((a, b) => a.x - b.x);
     }
     
-    // Create the bet
+    // Create the bet with this grid's zoom level
     const fullBet: Bet = {
       ...bet,
       colId: column.id,
+      zoomLevel: this.zoomLevel,
       status: 'pending',
       placedAt: Date.now(),
     };
     
     this.state.bets.push(fullBet);
     this.addToHeatmap(fullBet);
+    
+    console.log(`[Grid ${this.zoomLevel}x] Bet placed: yIndex=${bet.yIndex}, col=${snappedX}, cellSize=${this.cellSize}`);
     
     return fullBet;
   }
@@ -620,6 +682,10 @@ export class GameEngine {
     }
     
     return {
+      // Grid identity - client uses this to know which grid they're receiving
+      zoomLevel: this.zoomLevel,
+      cellSize: this.cellSize,
+      // Position state
       priceY: Math.round(this.state.priceY * 100) / 100,
       targetPriceY: Math.round(this.state.targetPriceY * 100) / 100,
       offsetX: Math.round(this.state.offsetX * 100) / 100,
@@ -663,6 +729,131 @@ export class GameEngine {
       // Generate columns for the new position
       this.generateColumns();
     }
+  }
+}
+
+// ============ MULTI-GRID GAME ENGINE ============
+
+/**
+ * MultiGridGameEngine - Manages 3 separate game grids (one per zoom level)
+ * 
+ * This is the main entry point for the game server.
+ * Each zoom level has its own independent grid with:
+ * - Its own cellSize, priceY coordinate system
+ * - Its own columns and bets
+ * - Shared price feed (distributed to all grids)
+ * 
+ * Benefits:
+ * - No coordinate conversion between zoom levels
+ * - Bets are resolved in the same coordinate system they were placed
+ * - Different zoom level players don't interfere with each other's bet avoidance
+ */
+export class MultiGridGameEngine {
+  private grids: Map<number, GameEngine> = new Map();
+  private zoomLevels: readonly number[];
+  private baseCellSize: number;
+  
+  constructor(onBetResolved?: BetResolvedCallback) {
+    this.zoomLevels = SERVER_CONFIG.ZOOM_LEVELS;
+    this.baseCellSize = SERVER_CONFIG.CELL_SIZE;
+    
+    // Create a grid for each zoom level
+    for (const zoomLevel of this.zoomLevels) {
+      const cellSize = Math.floor(this.baseCellSize * zoomLevel);
+      const grid = new GameEngine(zoomLevel, cellSize, onBetResolved);
+      this.grids.set(zoomLevel, grid);
+    }
+    
+    console.log(`[MultiGrid] Initialized ${this.grids.size} grids for zoom levels: ${Array.from(this.zoomLevels).join(', ')}`);
+  }
+  
+  /**
+   * Get a specific grid by zoom level
+   */
+  getGrid(zoomLevel: number): GameEngine | undefined {
+    return this.grids.get(zoomLevel);
+  }
+  
+  /**
+   * Get closest grid for a zoom level (in case exact match not found)
+   */
+  getClosestGrid(zoomLevel: number): GameEngine {
+    // Try exact match first
+    const exact = this.grids.get(zoomLevel);
+    if (exact) return exact;
+    
+    // Find closest zoom level
+    let closest = this.zoomLevels[0];
+    let minDiff = Math.abs(zoomLevel - closest);
+    
+    for (const z of this.zoomLevels) {
+      const diff = Math.abs(zoomLevel - z);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = z;
+      }
+    }
+    
+    return this.grids.get(closest)!;
+  }
+  
+  /**
+   * Called when new price data arrives from the price feed
+   * Distributes to ALL grids
+   */
+  onPriceUpdate(price: number): void {
+    for (const grid of this.grids.values()) {
+      grid.onPriceUpdate(price);
+    }
+  }
+  
+  /**
+   * Main game tick - ticks ALL grids
+   * Returns void since each client gets state for their specific grid
+   */
+  tick(): void {
+    for (const grid of this.grids.values()) {
+      grid.tick();
+    }
+  }
+  
+  /**
+   * Place a bet on the correct grid for the given zoom level
+   */
+  placeBet(zoomLevel: number, bet: Omit<Bet, 'status' | 'placedAt' | 'zoomLevel'>): Bet | null {
+    const grid = this.getClosestGrid(zoomLevel);
+    return grid.placeBet(bet);
+  }
+  
+  /**
+   * Get compact state for a specific zoom level
+   */
+  getCompactState(zoomLevel: number): object {
+    const grid = this.getClosestGrid(zoomLevel);
+    return grid.getCompactState();
+  }
+  
+  /**
+   * Get full state for a specific zoom level (debugging)
+   */
+  getFullState(zoomLevel: number): GameState {
+    const grid = this.getClosestGrid(zoomLevel);
+    return grid.getFullState();
+  }
+  
+  /**
+   * Sync offsetX for a specific grid
+   */
+  syncOffsetX(zoomLevel: number, clientOffsetX: number): void {
+    const grid = this.getClosestGrid(zoomLevel);
+    grid.syncOffsetX(clientOffsetX);
+  }
+  
+  /**
+   * Get all available zoom levels
+   */
+  getZoomLevels(): readonly number[] {
+    return this.zoomLevels;
   }
 }
 
