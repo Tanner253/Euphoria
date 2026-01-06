@@ -15,7 +15,9 @@ import { GAME_CONFIG } from '@/lib/game/gameConfig';
 import { 
   BetControls, 
   GemsModal,
+  GlobalChat,
   LeftSidebar,
+  LiveLeaderboard,
   RoadmapModal, 
   SplashScreen 
 } from '@/components/game';
@@ -28,7 +30,7 @@ export default function PredictionMarket() {
   // Output at 100ms intervals with smoothing applied
   const { price, previousPrice, isConnected: priceConnected, priceDirection, activeProvider } = useSolanaPrice();
   const { tryAutoStart: tryAutoStartMusic } = useArcadeMusic();
-  const { demoBalance, updateDemoBalance, updateGemsBalance, isDemoMode, isAuthenticated, gemsBalance } = useWallet();
+  const { demoBalance, updateDemoBalance, updateGemsBalance, isDemoMode, isAuthenticated, gemsBalance, walletAddress } = useWallet();
   
   // UI state
   const [betAmount, setBetAmount] = useState(1);
@@ -39,6 +41,8 @@ export default function PredictionMarket() {
   const [displayPrice, setDisplayPrice] = useState<number | null>(null);
   const [showRoadmap, setShowRoadmap] = useState(false);
   const [showGemsModal, setShowGemsModal] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [showWalletAuth, setShowWalletAuth] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -91,15 +95,17 @@ export default function PredictionMarket() {
   // Sidebar width for canvas offset - no offset on mobile (floating controls)
   const sidebarWidth = isMobile ? 0 : 56;
 
-  // Game engine hook
+  // Game engine hook - receives all config from server
   const {
     canvasRef,
+    configLoaded,
+    serverConfig,
     volatilityLevel,
     handlePointerDown,
     handlePointerMove,
     handlePointerUp,
     handlePointerLeave,
-    isDragging,
+    isDragging: _isDragging,
     updatePrice,
     zoomIndex,
     cycleZoom,
@@ -111,6 +117,7 @@ export default function PredictionMarket() {
     betAmount,
     sessionId: 'game-session',
     isAuthenticated,
+    walletAddress,
     isAutoPlaying,
     sidebarWidth,
     onBalanceChange: setBalance,
@@ -121,7 +128,7 @@ export default function PredictionMarket() {
   
   // Auto-play for development testing (only available in NODE_ENV=development)
   const { toggleAutoPlay, canAutoPlay } = useAutoPlay({
-    isEnabled: !showSplash && !showWalletAuth && !showRoadmap && !showGemsModal,
+    isEnabled: !showSplash && !showWalletAuth && !showRoadmap && !showGemsModal && configLoaded,
     isAutoPlaying,
     setIsAutoPlaying,
     canvasRef,
@@ -131,6 +138,7 @@ export default function PredictionMarket() {
     isMobile,
     sidebarWidth,
     zoomIndex,
+    serverConfig,  // From server - single source of truth
     onPlaceBet: placeBetAt,
   });
 
@@ -150,10 +158,11 @@ export default function PredictionMarket() {
     }
   }, [price, updatePrice]);
 
-  // Get bet options based on device
-  const getBetOptions = useCallback(() => 
-    isMobile ? GAME_CONFIG.BET_AMOUNT_OPTIONS_MOBILE : GAME_CONFIG.BET_AMOUNT_OPTIONS, 
-  [isMobile]);
+  // Get bet options from server config - only available when connected
+  const getBetOptions = useCallback(() => {
+    if (!serverConfig) return [1, 5, 10]; // Minimal fallback only for initial render
+    return [...(isMobile ? serverConfig.betAmountOptionsMobile : serverConfig.betAmountOptions)];
+  }, [isMobile, serverConfig]);
 
   // Canvas event handlers that check for open modals
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -183,6 +192,8 @@ export default function PredictionMarket() {
         onConnectWallet={() => setShowWalletAuth(true)}
         onCycleZoom={cycleZoom}
         onShowGemsModal={() => setShowGemsModal(true)}
+        onShowLeaderboard={() => setShowLeaderboard(true)}
+        onShowChat={() => setShowChat(true)}
         zoomIndex={zoomIndex}
         zoomLocked={zoomLocked}
         isMobile={isMobile}
@@ -190,19 +201,29 @@ export default function PredictionMarket() {
       
       {/* Game Canvas - offset for sidebar */}
       <div className="absolute inset-0 z-10" style={{ left: sidebarWidth }}>
-        <canvas 
-          ref={canvasRef}
-          className="block cursor-crosshair"
-          style={{ 
-            width: `calc(100vw - ${sidebarWidth}px)`, 
-            height: '100vh',
-            touchAction: 'none'  // Critical for mobile touch handling
-          }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerLeave={handlePointerLeave}
-        />
+        {/* Only render canvas when server config is loaded */}
+        {configLoaded ? (
+          <canvas 
+            ref={canvasRef}
+            className="block cursor-crosshair"
+            style={{ 
+              width: `calc(100vw - ${sidebarWidth}px)`, 
+              height: '100vh',
+              touchAction: 'none'  // Critical for mobile touch handling
+            }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerLeave}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center">
+              <div className="animate-spin w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full mx-auto mb-4" />
+              <p className="text-pink-300/70 text-sm">Connecting to server...</p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Win notification - Clean minimal style */}
@@ -314,6 +335,12 @@ export default function PredictionMarket() {
           <span>{isAutoPlaying ? 'AUTO: ON' : 'AUTO: OFF'}</span>
         </button>
       )}
+      
+      {/* Live Leaderboard Modal */}
+      <LiveLeaderboard 
+        isOpen={showLeaderboard} 
+        onClose={() => setShowLeaderboard(false)} 
+      />
 
       {/* Roadmap Modal */}
       <RoadmapModal 
@@ -361,6 +388,13 @@ export default function PredictionMarket() {
           </div>
         </div>
       )}
+      
+      {/* Global Chat */}
+      <GlobalChat
+        walletAddress={walletAddress}
+        isOpen={showChat}
+        onClose={() => setShowChat(false)}
+      />
     </div>
   );
 }

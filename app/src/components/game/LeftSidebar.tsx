@@ -19,7 +19,9 @@ import {
   X,
   ZoomOut,
   Music,
-  VolumeX
+  VolumeX,
+  Trophy,
+  MessageCircle
 } from 'lucide-react';
 import { useWallet } from '@/contexts/WalletContext';
 import { useArcadeMusic } from '@/hooks/useArcadeMusic';
@@ -45,6 +47,8 @@ interface LeftSidebarProps {
   onConnectWallet: () => void;
   onCycleZoom: () => void;
   onShowGemsModal: () => void;
+  onShowLeaderboard: () => void;
+  onShowChat: () => void;
   
   // Zoom
   zoomIndex: number;
@@ -73,6 +77,8 @@ export default function LeftSidebar({
   onConnectWallet,
   onCycleZoom,
   onShowGemsModal,
+  onShowLeaderboard,
+  onShowChat,
   zoomIndex,
   zoomLocked,
   isMobile,
@@ -233,6 +239,22 @@ export default function LeftSidebar({
             className="pointer-events-auto w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center active:scale-95 transition-transform"
           >
             <Map size={18} className="text-white" />
+          </button>
+          
+          {/* Leaderboard */}
+          <button
+            onClick={onShowLeaderboard}
+            className="pointer-events-auto w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center active:scale-95 transition-transform"
+          >
+            <Trophy size={18} className="text-white" />
+          </button>
+          
+          {/* Chat */}
+          <button
+            onClick={onShowChat}
+            className="pointer-events-auto w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-teal-500 flex items-center justify-center active:scale-95 transition-transform"
+          >
+            <MessageCircle size={18} className="text-white" />
           </button>
         </div>
         
@@ -522,6 +544,28 @@ export default function LeftSidebar({
               <div className={`flex items-center gap-2 ${!isExpanded && 'flex-col'}`}>
                 <Map size={isExpanded ? 16 : 20} className="text-white" />
                 {isExpanded && <span className="text-xs font-semibold text-white">Roadmap</span>}
+              </div>
+            </button>
+            
+            {/* Leaderboard */}
+            <button
+              onClick={onShowLeaderboard}
+              className={`w-full p-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 transition-all ${!isExpanded && 'flex justify-center'}`}
+            >
+              <div className={`flex items-center gap-2 ${!isExpanded && 'flex-col'}`}>
+                <Trophy size={isExpanded ? 16 : 20} className="text-white" />
+                {isExpanded && <span className="text-xs font-semibold text-white">Leaderboard</span>}
+              </div>
+            </button>
+            
+            {/* Global Chat */}
+            <button
+              onClick={onShowChat}
+              className={`w-full p-2 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 transition-all ${!isExpanded && 'flex justify-center'}`}
+            >
+              <div className={`flex items-center gap-2 ${!isExpanded && 'flex-col'}`}>
+                <MessageCircle size={isExpanded ? 16 : 20} className="text-white" />
+                {isExpanded && <span className="text-xs font-semibold text-white">Global Chat</span>}
               </div>
             </button>
             

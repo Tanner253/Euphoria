@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { WalletProvider } from "@/contexts/WalletContext";
+import { SocketProvider } from "@/contexts/SocketContext";
 
 const spaceGrotesk = Space_Grotesk({
   variable: "--font-sans",
@@ -38,7 +39,9 @@ export default function RootLayout({
         suppressHydrationWarning
       >
         <WalletProvider>
-          {children}
+          <SocketProvider>
+            {children}
+          </SocketProvider>
         </WalletProvider>
       </body>
     </html>

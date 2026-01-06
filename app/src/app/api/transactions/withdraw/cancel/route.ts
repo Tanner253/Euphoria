@@ -31,8 +31,8 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Only allow cancellation if status is 'pending' (not 'processing')
-    if (pendingWithdrawal.status !== 'pending') {
+    // Only allow cancellation if status is 'pending' or 'awaiting_approval' (not 'processing')
+    if (pendingWithdrawal.status !== 'pending' && pendingWithdrawal.status !== 'awaiting_approval') {
       return NextResponse.json(
         { error: 'Cannot cancel - withdrawal is already being processed' },
         { status: 400 }
