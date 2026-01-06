@@ -18,6 +18,7 @@ export interface SocketContextValue {
   isConnected: boolean;
   serverConfig: ServerConfig | null;
   identify: (walletAddress: string, token?: string) => void;
+  refreshBalance: () => Promise<number | null>;
 }
 
 // Server URL from environment
@@ -85,11 +86,33 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     }
   }, [socket]);
   
+  // Request fresh balance from server (useful after database updates)
+  const refreshBalance = useCallback((): Promise<number | null> => {
+    return new Promise((resolve) => {
+      if (!socket?.connected) {
+        console.warn('[Socket] Cannot refresh balance - not connected');
+        resolve(null);
+        return;
+      }
+      
+      socket.emit('refreshBalance', (response: { success: boolean; balance?: number; error?: string }) => {
+        if (response.success && response.balance !== undefined) {
+          console.log('[Socket] Balance refreshed:', response.balance);
+          resolve(response.balance);
+        } else {
+          console.warn('[Socket] Failed to refresh balance:', response.error);
+          resolve(null);
+        }
+      });
+    });
+  }, [socket]);
+  
   const value: SocketContextValue = {
     socket,
     isConnected,
     serverConfig,
     identify,
+    refreshBalance,
   };
   
   return (

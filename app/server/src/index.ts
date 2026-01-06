@@ -194,6 +194,49 @@ async function broadcastAdminUpdate() {
   }
 }
 
+// ============ BALANCE PUSH HELPER ============
+
+/**
+ * Push fresh balance from database to a connected user
+ * Call this after any database balance changes (admin updates, deposits, etc.)
+ */
+async function pushBalanceToUser(walletAddress: string, reason: string = 'Balance updated'): Promise<boolean> {
+  try {
+    const userService = UserServiceServer.getInstance();
+    const user = await userService.getUser(walletAddress);
+    
+    if (!user) {
+      console.log(`[Balance] User not found: ${walletAddress.slice(0, 8)}...`);
+      return false;
+    }
+    
+    // Find all connected sockets for this wallet
+    let pushed = false;
+    for (const [socketId, clientData] of connectedClients.entries()) {
+      if (clientData.walletAddress === walletAddress) {
+        io.to(socketId).emit('balanceUpdate', {
+          newBalance: user.gemsBalance,
+          reason,
+        });
+        console.log(`[Balance] Pushed ${user.gemsBalance} gems to ${walletAddress.slice(0, 8)}... (${reason})`);
+        pushed = true;
+      }
+    }
+    
+    if (!pushed) {
+      console.log(`[Balance] User not connected: ${walletAddress.slice(0, 8)}...`);
+    }
+    
+    return pushed;
+  } catch (err) {
+    console.error('[Balance] Failed to push balance:', err);
+    return false;
+  }
+}
+
+// Export for use in other modules (e.g., REST API routes)
+export { pushBalanceToUser };
+
 io.on('connection', (socket: Socket) => {
   console.log(`[Socket] Client connected: ${socket.id}`);
   
@@ -779,21 +822,77 @@ io.on('connection', (socket: Socket) => {
       return;
     }
     
-    console.log(`[Socket] Admin action: ${action.type}`);
+    console.log(`[Socket] Admin action: ${action.type}`, action.payload);
     
-    // Actions will be handled similarly to the REST API
-    // For now, just acknowledge and trigger data refresh
     try {
-      // Broadcast updated admin data to all admin subscribers
+      // Handle specific admin actions
+      if (action.type === 'pushBalanceUpdate') {
+        // Push balance update to a specific user
+        const walletAddress = action.payload?.walletAddress as string;
+        if (walletAddress) {
+          await pushBalanceToUser(walletAddress, 'Admin balance update');
+          callback({ success: true, result: { message: `Balance pushed to ${walletAddress.slice(0, 8)}...` } });
+          return;
+        }
+      }
+      
+      if (action.type === 'refreshAllBalances') {
+        // Push balance updates to ALL connected users
+        let count = 0;
+        for (const [socketId, clientData] of connectedClients.entries()) {
+          if (clientData.walletAddress) {
+            await pushBalanceToUser(clientData.walletAddress, 'Server balance sync');
+            count++;
+          }
+        }
+        callback({ success: true, result: { message: `Refreshed ${count} user balances` } });
+        return;
+      }
+      
+      // Default: just acknowledge and trigger data refresh
       const adminData = await AdminDataService.getDashboardData();
       io.to('admin').emit('adminData', adminData);
       callback({ success: true, result: { message: 'Action processed' } });
     } catch (err) {
+      console.error('[Socket] Admin action error:', err);
       callback({ success: false, error: 'Failed to process action' });
     }
   });
   
   // ==================== END ADMIN ====================
+  
+  // ==================== BALANCE REFRESH ====================
+  
+  // Client requests fresh balance from database (for manual refresh or reconnection)
+  socket.on('refreshBalance', async (callback?: (response: { success: boolean; balance?: number; error?: string }) => void) => {
+    const clientData = connectedClients.get(socket.id);
+    
+    if (!clientData?.walletAddress) {
+      callback?.({ success: false, error: 'Not authenticated' });
+      return;
+    }
+    
+    try {
+      const userService = UserServiceServer.getInstance();
+      const user = await userService.getUser(clientData.walletAddress);
+      
+      if (user) {
+        // Push the fresh balance
+        socket.emit('balanceUpdate', {
+          newBalance: user.gemsBalance,
+          reason: 'Balance refreshed',
+        });
+        callback?.({ success: true, balance: user.gemsBalance });
+      } else {
+        callback?.({ success: false, error: 'User not found' });
+      }
+    } catch (err) {
+      console.error('[Socket] Failed to refresh balance:', err);
+      callback?.({ success: false, error: 'Database error' });
+    }
+  });
+  
+  // ==================== END BALANCE REFRESH ====================
   
   // Ping for latency measurement
   socket.on('ping', (timestamp: number) => {
