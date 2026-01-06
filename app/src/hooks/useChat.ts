@@ -1,7 +1,11 @@
 'use client';
 
+/**
+ * Chat Hook - Uses shared socket connection
+ */
+
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { useSocket } from '@/contexts/SocketContext';
 
 export interface ChatMessage {
   id: string;
@@ -11,66 +15,67 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-const SERVER_URL = process.env.NEXT_PUBLIC_GAME_SERVER_URL || 'http://localhost:3002';
-
 export function useChat(walletAddress: string | null) {
+  const { socket, isConnected } = useSocket();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
+  const [isSubscribed, setIsSubscribed] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const socketRef = useRef<Socket | null>(null);
+  const subscribedRef = useRef(false);
   
-  // Connect to chat server
+  // Subscribe to chat when connected
   useEffect(() => {
-    // Reuse existing socket or create new one
-    const socket = io(SERVER_URL, {
-      transports: ['websocket'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-    });
+    if (!socket || !isConnected) {
+      setIsSubscribed(false);
+      return;
+    }
     
-    socketRef.current = socket;
+    // Avoid duplicate subscriptions
+    if (subscribedRef.current) return;
+    subscribedRef.current = true;
     
-    socket.on('connect', () => {
-      setIsConnected(true);
-      setError(null);
-      socket.emit('subscribeChat');
-      
-      // Re-identify if we have wallet
-      if (walletAddress) {
-        socket.emit('identify', { walletAddress });
-      }
-    });
+    // Subscribe to chat
+    socket.emit('subscribeChat');
+    setIsSubscribed(true);
+    setError(null);
     
-    socket.on('disconnect', () => {
-      setIsConnected(false);
-    });
+    // Identify if we have wallet
+    if (walletAddress) {
+      socket.emit('identify', { walletAddress });
+    }
     
     // Receive chat history on subscribe
-    socket.on('chatHistory', (history: ChatMessage[]) => {
+    const handleChatHistory = (history: ChatMessage[]) => {
       setMessages(history);
-    });
+    };
     
     // Receive new messages
-    socket.on('newChatMessage', (message: ChatMessage) => {
+    const handleNewMessage = (message: ChatMessage) => {
       setMessages(prev => [...prev, message]);
-    });
+    };
     
-    socket.on('connect_error', (err) => {
-      setError('Connection error');
-      console.error('[Chat] Connection error:', err.message);
-    });
+    socket.on('chatHistory', handleChatHistory);
+    socket.on('newChatMessage', handleNewMessage);
     
     return () => {
+      socket.off('chatHistory', handleChatHistory);
+      socket.off('newChatMessage', handleNewMessage);
       socket.emit('unsubscribeChat');
-      socket.disconnect();
-      socketRef.current = null;
+      subscribedRef.current = false;
+      setIsSubscribed(false);
     };
-  }, [walletAddress]);
+  }, [socket, isConnected, walletAddress]);
+  
+  // Re-identify when wallet changes
+  useEffect(() => {
+    if (socket?.connected && walletAddress) {
+      socket.emit('identify', { walletAddress });
+    }
+  }, [socket, walletAddress]);
   
   // Send a message
   const sendMessage = useCallback((message: string): Promise<{ success: boolean; error?: string }> => {
     return new Promise((resolve) => {
-      if (!socketRef.current?.connected) {
+      if (!socket?.connected) {
         resolve({ success: false, error: 'Not connected' });
         return;
       }
@@ -80,18 +85,17 @@ export function useChat(walletAddress: string | null) {
         return;
       }
       
-      socketRef.current.emit('sendChatMessage', message, (response: { success: boolean; error?: string }) => {
+      socket.emit('sendChatMessage', message, (response: { success: boolean; error?: string }) => {
         resolve(response);
       });
     });
-  }, [walletAddress]);
+  }, [socket, walletAddress]);
   
   return {
     messages,
-    isConnected,
+    isConnected: isConnected && isSubscribed,
     error,
     sendMessage,
-    canSend: !!walletAddress && isConnected,
+    canSend: !!walletAddress && isConnected && isSubscribed,
   };
 }
-

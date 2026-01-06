@@ -10,10 +10,11 @@
  */
 
 import { useRef, useCallback, useEffect, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import { GAME_CONFIG, calculateMultiplier } from '@/lib/game/gameConfig';
 import type { ServerConfig } from '@/lib/game/gameConfig';
 import { getGameSounds } from '@/lib/audio/GameSounds';
+import { useSocket } from '@/contexts/SocketContext';
 // NOTE: All bet operations now go through Socket.io - no REST API
 import type { Bet, Column, GameState, VolatilityLevel, Particle, SpecialCell } from '@/lib/game/types';
 
@@ -82,8 +83,7 @@ function getHeatColor(heat: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-// Socket URL for game server
-const GAME_SERVER_URL = process.env.NEXT_PUBLIC_GAME_SERVER_URL || 'http://localhost:3002';
+// Socket connection provided by SocketContext - single connection for all features
 
 // ========== PARTICLE SYSTEM HELPERS ==========
 
@@ -898,10 +898,21 @@ export function useGameEngine({
   onTotalLostChange,
   onError,
 }: UseGameEngineOptions): UseGameEngineReturn {
+  // Get shared socket connection from context
+  const { socket, isConnected, serverConfig: contextServerConfig } = useSocket();
+  
   // Server config - SINGLE SOURCE OF TRUTH for game settings
   // Starts as null - game MUST wait for server config before rendering
   const serverConfigRef = useRef<ServerConfig | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
+  
+  // Sync serverConfigRef with context when config arrives
+  useEffect(() => {
+    if (contextServerConfig) {
+      serverConfigRef.current = contextServerConfig;
+      setConfigLoaded(true);
+    }
+  }, [contextServerConfig]);
   
   const [volatilityLevel, setVolatilityLevel] = useState<VolatilityLevel>('active');
   const [isDragging, setIsDragging] = useState(false);
@@ -999,34 +1010,20 @@ export function useGameEngine({
     onTotalLostChangeRef.current = onTotalLostChange;
   }, [onBalanceChange, onWin, onTotalWonChange, onTotalLostChange]);
   
-  // Connect to socket for server-authoritative game
+  // Use shared socket connection from context for server-authoritative game
   useEffect(() => {
-    const socket = io(GAME_SERVER_URL, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-    });
+    if (!socket || !isConnected) return;
     
     socketRef.current = socket;
+    console.log('[GameEngine] Using shared socket connection');
     
-    socket.on('connect', () => {
-      console.log('[GameEngine] Connected to game server (server-authoritative mode)');
-      
-      // Identify wallet for authenticated bet placement
-      if (walletAddress) {
-        socket.emit('identify', { walletAddress });
-        console.log('[GameEngine] Identified wallet:', walletAddress.slice(0, 8));
-      }
-    });
+    // Identify wallet for authenticated bet placement
+    if (walletAddress) {
+      socket.emit('identify', { walletAddress });
+      console.log('[GameEngine] Identified wallet:', walletAddress.slice(0, 8));
+    }
     
-    // Receive server config (SINGLE SOURCE OF TRUTH)
-    // Game CANNOT function without this - must wait
-    socket.on('serverConfig', (config: ServerConfig) => {
-      console.log('[GameEngine] Received server config - game ready');
-      serverConfigRef.current = config;
-      setConfigLoaded(true);
-    });
+    // Note: serverConfig is handled by SocketContext and synced via useEffect above
     
     // ========== RECEIVE AUTHORITATIVE GAME STATE FROM SERVER ==========
     // Server is the single source of truth - client just renders
@@ -1203,10 +1200,14 @@ export function useGameEngine({
       balanceRef.current = data.newBalance;
     });
     
+    // Cleanup: Remove event listeners (don't disconnect - socket owned by context)
     return () => {
-      socket.disconnect();
+      socket.off('gameState');
+      socket.off('betPlaced');
+      socket.off('betResolved');
+      socket.off('balanceUpdate');
     };
-  }, [isMobile, zoomLevel, walletAddress]);
+  }, [socket, isConnected, isMobile, zoomLevel, walletAddress]);
   
   // Track tab visibility to handle price jumps smoothly
   const lastFrameTimeRef = useRef<number>(Date.now());

@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * Live Leaderboard Hook
+ * Live Leaderboard Hook - Uses shared socket connection
  * 
- * Pure Socket.io connection - NO POLLING.
+ * Pure Socket.io - NO POLLING.
  * Server pushes all updates in real-time.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { useSocket } from '@/contexts/SocketContext';
 
 // ============ TYPES ============
 
@@ -44,7 +44,6 @@ export interface LeaderboardData {
 }
 
 export interface UseLeaderboardOptions {
-  serverUrl?: string;
   autoSubscribe?: boolean;
 }
 
@@ -58,81 +57,73 @@ export interface UseLeaderboardReturn {
   unsubscribe: () => void;
 }
 
-// Server URL from environment
-const DEFAULT_SERVER_URL = process.env.NEXT_PUBLIC_GAME_SERVER_URL || 'http://localhost:3002';
-
 export function useLeaderboard(options: UseLeaderboardOptions = {}): UseLeaderboardReturn {
-  const {
-    serverUrl = DEFAULT_SERVER_URL,
-    autoSubscribe = true,
-  } = options;
+  const { autoSubscribe = true } = options;
+  const { socket, isConnected } = useSocket();
   
-  const socketRef = useRef<Socket | null>(null);
-  
-  const [isConnected, setIsConnected] = useState(false);
+  const subscribedRef = useRef(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [recentWins, setRecentWins] = useState<RecentWin[]>([]);
   const [liveStats, setLiveStats] = useState<LiveStats | null>(null);
   
-  // Connect to server - pure Socket.io, no polling
+  // Subscribe to leaderboard when connected
   useEffect(() => {
-    const socket = io(serverUrl, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-    });
-    
-    socketRef.current = socket;
-    
-    socket.on('connect', () => {
-      console.log('[Leaderboard] Connected to server');
-      setIsConnected(true);
-      
-      if (autoSubscribe) {
-        socket.emit('subscribeLeaderboard');
-        setIsSubscribed(true);
-      }
-    });
-    
-    socket.on('disconnect', () => {
-      console.log('[Leaderboard] Disconnected from server');
-      setIsConnected(false);
+    if (!socket || !isConnected) {
       setIsSubscribed(false);
-    });
+      return;
+    }
+    
+    // Avoid duplicate subscriptions
+    if (subscribedRef.current) return;
     
     // Receive leaderboard data from server
-    socket.on('leaderboard', (data: LeaderboardData) => {
+    const handleLeaderboard = (data: LeaderboardData) => {
       setLeaderboard(data.leaderboard || []);
       setRecentWins(data.recentWins || []);
       setLiveStats(data.liveStats || null);
-    });
+    };
     
     // Receive real-time win notifications
-    socket.on('recentWin', (win: RecentWin) => {
+    const handleRecentWin = (win: RecentWin) => {
       setRecentWins(prev => [win, ...prev.slice(0, 19)]);
-    });
-    
-    return () => {
-      socket.disconnect();
     };
-  }, [serverUrl, autoSubscribe]);
-  
-  const subscribe = useCallback(() => {
-    if (socketRef.current?.connected && !isSubscribed) {
-      socketRef.current.emit('subscribeLeaderboard');
+    
+    socket.on('leaderboard', handleLeaderboard);
+    socket.on('recentWin', handleRecentWin);
+    
+    if (autoSubscribe) {
+      socket.emit('subscribeLeaderboard');
+      subscribedRef.current = true;
       setIsSubscribed(true);
     }
-  }, [isSubscribed]);
+    
+    return () => {
+      socket.off('leaderboard', handleLeaderboard);
+      socket.off('recentWin', handleRecentWin);
+      if (subscribedRef.current) {
+        socket.emit('unsubscribeLeaderboard');
+        subscribedRef.current = false;
+      }
+      setIsSubscribed(false);
+    };
+  }, [socket, isConnected, autoSubscribe]);
+  
+  const subscribe = useCallback(() => {
+    if (socket?.connected && !subscribedRef.current) {
+      socket.emit('subscribeLeaderboard');
+      subscribedRef.current = true;
+      setIsSubscribed(true);
+    }
+  }, [socket]);
   
   const unsubscribe = useCallback(() => {
-    if (socketRef.current?.connected && isSubscribed) {
-      socketRef.current.emit('unsubscribeLeaderboard');
+    if (socket?.connected && subscribedRef.current) {
+      socket.emit('unsubscribeLeaderboard');
+      subscribedRef.current = false;
       setIsSubscribed(false);
     }
-  }, [isSubscribed]);
+  }, [socket]);
   
   return {
     isConnected,

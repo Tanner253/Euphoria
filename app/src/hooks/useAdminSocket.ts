@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * Admin Socket Hook
+ * Admin Socket Hook - Uses shared socket connection
  * 
  * Real-time admin dashboard data via Socket.io.
  * NO POLLING - server pushes all updates.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { useSocket } from '@/contexts/SocketContext';
 
 // ============ TYPES ============
 
@@ -81,7 +81,6 @@ export interface AdminData {
 }
 
 export interface UseAdminSocketOptions {
-  serverUrl?: string;
   autoSubscribe?: boolean;
 }
 
@@ -95,80 +94,64 @@ export interface UseAdminSocketReturn {
   executeAction: (actionType: string, payload?: Record<string, unknown>) => Promise<{ success: boolean; result?: unknown; error?: string }>;
 }
 
-// Server URL from environment
-const DEFAULT_SERVER_URL = process.env.NEXT_PUBLIC_GAME_SERVER_URL || 'http://localhost:3002';
-
 export function useAdminSocket(options: UseAdminSocketOptions = {}): UseAdminSocketReturn {
-  const {
-    serverUrl = DEFAULT_SERVER_URL,
-    autoSubscribe = true,
-  } = options;
+  const { autoSubscribe = true } = options;
+  const { socket, isConnected } = useSocket();
   
-  const socketRef = useRef<Socket | null>(null);
-  
-  const [isConnected, setIsConnected] = useState(false);
+  const subscribedRef = useRef(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<AdminData | null>(null);
   
-  // Connect to server
+  // Subscribe to admin data when connected
   useEffect(() => {
-    const socket = io(serverUrl, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-    });
-    
-    socketRef.current = socket;
-    
-    socket.on('connect', () => {
-      console.log('[AdminSocket] Connected to server');
-      setIsConnected(true);
-      setError(null);
-      
-      if (autoSubscribe) {
-        socket.emit('subscribeAdmin', (response: { success: boolean; data?: AdminData; error?: string }) => {
-          if (response.success) {
-            setIsSubscribed(true);
-            if (response.data) {
-              setData(response.data);
-            }
-          } else {
-            setError(response.error || 'Failed to subscribe to admin');
-          }
-        });
-      }
-    });
-    
-    socket.on('disconnect', () => {
-      console.log('[AdminSocket] Disconnected from server');
-      setIsConnected(false);
+    if (!socket || !isConnected) {
       setIsSubscribed(false);
-    });
+      return;
+    }
     
-    socket.on('connect_error', (err) => {
-      console.error('[AdminSocket] Connection error:', err.message);
-      setError(`Connection error: ${err.message}`);
-    });
+    // Avoid duplicate subscriptions
+    if (subscribedRef.current) return;
     
     // Receive admin data updates from server
-    socket.on('adminData', (adminData: AdminData) => {
-      console.log('[AdminSocket] Received admin data update');
+    const handleAdminData = (adminData: AdminData) => {
       setData(adminData);
-    });
+    };
+    
+    socket.on('adminData', handleAdminData);
+    
+    if (autoSubscribe) {
+      socket.emit('subscribeAdmin', (response: { success: boolean; data?: AdminData; error?: string }) => {
+        if (response.success) {
+          subscribedRef.current = true;
+          setIsSubscribed(true);
+          setError(null);
+          if (response.data) {
+            setData(response.data);
+          }
+        } else {
+          setError(response.error || 'Failed to subscribe to admin');
+        }
+      });
+    }
     
     return () => {
-      socket.disconnect();
+      socket.off('adminData', handleAdminData);
+      if (subscribedRef.current) {
+        socket.emit('unsubscribeAdmin');
+        subscribedRef.current = false;
+      }
+      setIsSubscribed(false);
     };
-  }, [serverUrl, autoSubscribe]);
+  }, [socket, isConnected, autoSubscribe]);
   
   const subscribe = useCallback(() => {
-    if (socketRef.current?.connected && !isSubscribed) {
-      socketRef.current.emit('subscribeAdmin', (response: { success: boolean; data?: AdminData; error?: string }) => {
+    if (socket?.connected && !subscribedRef.current) {
+      socket.emit('subscribeAdmin', (response: { success: boolean; data?: AdminData; error?: string }) => {
         if (response.success) {
+          subscribedRef.current = true;
           setIsSubscribed(true);
+          setError(null);
           if (response.data) {
             setData(response.data);
           }
@@ -177,30 +160,31 @@ export function useAdminSocket(options: UseAdminSocketOptions = {}): UseAdminSoc
         }
       });
     }
-  }, [isSubscribed]);
+  }, [socket]);
   
   const unsubscribe = useCallback(() => {
-    if (socketRef.current?.connected && isSubscribed) {
-      socketRef.current.emit('unsubscribeAdmin');
+    if (socket?.connected && subscribedRef.current) {
+      socket.emit('unsubscribeAdmin');
+      subscribedRef.current = false;
       setIsSubscribed(false);
     }
-  }, [isSubscribed]);
+  }, [socket]);
   
   const executeAction = useCallback(async (
     actionType: string, 
     payload?: Record<string, unknown>
   ): Promise<{ success: boolean; result?: unknown; error?: string }> => {
     return new Promise((resolve) => {
-      if (!socketRef.current?.connected) {
+      if (!socket?.connected) {
         resolve({ success: false, error: 'Not connected to server' });
         return;
       }
       
-      socketRef.current.emit('adminAction', { type: actionType, payload }, (response: { success: boolean; result?: unknown; error?: string }) => {
+      socket.emit('adminAction', { type: actionType, payload }, (response: { success: boolean; result?: unknown; error?: string }) => {
         resolve(response);
       });
     });
-  }, []);
+  }, [socket]);
   
   return {
     isConnected,
@@ -212,4 +196,3 @@ export function useAdminSocket(options: UseAdminSocketOptions = {}): UseAdminSoc
     executeAction,
   };
 }
-
