@@ -30,7 +30,8 @@ const SocketContext = createContext<SocketContextValue | null>(null);
 // ============ PROVIDER ============
 
 export function SocketProvider({ children }: { children: React.ReactNode }) {
-  const socketRef = useRef<Socket | null>(null);
+  // Use state for socket so changes trigger re-renders and propagate to consumers
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   
@@ -38,7 +39,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     console.log('[Socket] Initializing single socket connection to', SERVER_URL);
     
-    const socket = io(SERVER_URL, {
+    const newSocket = io(SERVER_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: Infinity,
@@ -46,24 +47,25 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       reconnectionDelayMax: 5000,
     });
     
-    socketRef.current = socket;
+    // Set socket in state so consumers get the reference
+    setSocket(newSocket);
     
-    socket.on('connect', () => {
-      console.log('[Socket] Connected:', socket.id);
+    newSocket.on('connect', () => {
+      console.log('[Socket] Connected:', newSocket.id);
       setIsConnected(true);
     });
     
-    socket.on('disconnect', (reason) => {
+    newSocket.on('disconnect', (reason) => {
       console.log('[Socket] Disconnected:', reason);
       setIsConnected(false);
     });
     
-    socket.on('connect_error', (err) => {
+    newSocket.on('connect_error', (err) => {
       console.error('[Socket] Connection error:', err.message);
     });
     
     // Receive server config (SINGLE SOURCE OF TRUTH)
-    socket.on('serverConfig', (config: ServerConfig) => {
+    newSocket.on('serverConfig', (config: ServerConfig) => {
       console.log('[Socket] Received server config');
       setServerConfig(config);
     });
@@ -71,20 +73,20 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     // Cleanup on unmount
     return () => {
       console.log('[Socket] Cleaning up connection');
-      socket.disconnect();
-      socketRef.current = null;
+      newSocket.disconnect();
+      setSocket(null);
     };
   }, []);
   
   // Identify user with wallet
   const identify = useCallback((walletAddress: string, token?: string) => {
-    if (socketRef.current?.connected) {
-      socketRef.current.emit('identify', { walletAddress, token });
+    if (socket?.connected) {
+      socket.emit('identify', { walletAddress, token });
     }
-  }, []);
+  }, [socket]);
   
   const value: SocketContextValue = {
-    socket: socketRef.current,
+    socket,
     isConnected,
     serverConfig,
     identify,
