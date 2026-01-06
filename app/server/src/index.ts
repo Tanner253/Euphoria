@@ -26,7 +26,7 @@ import { createServer } from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import cors from 'cors';
 
-import { SERVER_CONFIG } from './config.js';
+import { SERVER_CONFIG, getClientConfig } from './config.js';
 import { GameEngine, Bet } from './gameEngine.js';
 import { PriceService } from './priceService.js';
 import { 
@@ -197,6 +197,9 @@ io.on('connection', (socket: Socket) => {
     zoomLevel: 1.0,
   });
   
+  // Send server config to client (single source of truth)
+  socket.emit('serverConfig', getClientConfig());
+  
   // Send initial state immediately
   socket.emit('gameState', gameEngine.getCompactState());
   
@@ -328,14 +331,13 @@ io.on('connection', (socket: Socket) => {
         const betService = BetServiceServer.getInstance();
         
         // Calculate win price boundaries (grid-aligned)
-        const PRICE_SCALE = 2500;
         const cellSize = betData.cellSize || SERVER_CONFIG.CELL_SIZE;
         const basePrice = betData.basePrice || currentPrice;
         
         const cellYTop = betData.yIndex * cellSize;
         const cellYBottom = (betData.yIndex + 1) * cellSize;
-        const winPriceMax = basePrice + (cellSize / 2 - cellYTop) / PRICE_SCALE;
-        const winPriceMin = basePrice + (cellSize / 2 - cellYBottom) / PRICE_SCALE;
+        const winPriceMax = basePrice + (cellSize / 2 - cellYTop) / SERVER_CONFIG.PRICE_SCALE;
+        const winPriceMin = basePrice + (cellSize / 2 - cellYBottom) / SERVER_CONFIG.PRICE_SCALE;
         
         // Place bet in database (validates balance and deducts gems)
         const dbResult = await betService.placeBet({
@@ -503,7 +505,6 @@ io.on('connection', (socket: Socket) => {
         
         // Process each bet
         let newBalance = user.gemsBalance;
-        const PRICE_SCALE = 2500; // Same as single bet handler
         
         for (let i = 0; i < batchData.bets.length; i++) {
           const betData = batchData.bets[i];
@@ -515,8 +516,8 @@ io.on('connection', (socket: Socket) => {
           const betBasePrice = betData.basePrice || basePrice;
           const cellYTop = betData.yIndex * betCellSize;
           const cellYBottom = (betData.yIndex + 1) * betCellSize;
-          const winPriceMax = betBasePrice + (betCellSize / 2 - cellYTop) / PRICE_SCALE;
-          const winPriceMin = betBasePrice + (betCellSize / 2 - cellYBottom) / PRICE_SCALE;
+          const winPriceMax = betBasePrice + (betCellSize / 2 - cellYTop) / SERVER_CONFIG.PRICE_SCALE;
+          const winPriceMin = betBasePrice + (betCellSize / 2 - cellYBottom) / SERVER_CONFIG.PRICE_SCALE;
           
           // Place in database
           const dbResult = await betService.placeBet({
@@ -526,6 +527,8 @@ io.on('connection', (socket: Socket) => {
             multiplier,
             columnId: betData.colId,
             yIndex: betData.yIndex,
+            basePrice: betBasePrice,
+            cellSize: betCellSize,
             priceAtBet: betBasePrice,
             winPriceMin,
             winPriceMax,
@@ -830,15 +833,7 @@ app.get('/health', (req, res) => {
 
 // Get server config (for client sync)
 app.get('/config', (req, res) => {
-  res.json({
-    cellSize: SERVER_CONFIG.CELL_SIZE,
-    cellSizeMobile: SERVER_CONFIG.CELL_SIZE_MOBILE,
-    zoomLevels: SERVER_CONFIG.ZOOM_LEVELS,
-    priceScale: SERVER_CONFIG.PRICE_SCALE,
-    headX: SERVER_CONFIG.HEAD_X,
-    headXMobile: SERVER_CONFIG.HEAD_X_MOBILE,
-    tickRate: SERVER_CONFIG.TICK_RATE,
-  });
+  res.json(getClientConfig());
 });
 
 // Get leaderboard (REST endpoint)

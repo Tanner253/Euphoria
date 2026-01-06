@@ -72,6 +72,56 @@ export interface UserData {
   status: string;
 }
 
+/**
+ * Server-authoritative config received on connect
+ * This is the SINGLE SOURCE OF TRUTH - do not duplicate in client code
+ */
+export interface ServerConfig {
+  // Grid
+  cellSize: number;
+  cellSizeMobile: number;
+  
+  // Zoom
+  zoomLevels: readonly number[];
+  zoomLabels: readonly string[];
+  
+  // Grid speed
+  gridSpeedActive: number;
+  gridSpeedLow: number;
+  gridSpeedIdle: number;
+  gridSpeedMin: number;
+  
+  // Price
+  priceScale: number;
+  priceSmoothing: number;
+  flatlineThreshold: number;
+  flatlineWindow: number;
+  
+  // Betting rules
+  minBetColumnsAhead: number;
+  minBetColumnsAheadMobile: number;
+  betAmountOptions: readonly number[];
+  betAmountOptionsMobile: readonly number[];
+  maxBetAmount: number;
+  minBetAmount: number;
+  
+  // House edge
+  winZoneMargin: number;
+  
+  // Layout
+  headX: number;
+  headXMobile: number;
+  verticalCells: number;
+  priceAxisWidth: number;
+  priceAxisWidthMobile: number;
+  sidebarWidth: number;
+  sidebarWidthMobile: number;
+  mobileCameraScale: number;
+  
+  // Server info
+  tickRate: number;
+}
+
 export interface BalanceUpdate {
   newBalance: number;
   reason: string;
@@ -94,6 +144,9 @@ export interface UseGameSocketReturn {
   isConnected: boolean;
   error: string | null;
   latency: number;
+  
+  // Server config (SINGLE SOURCE OF TRUTH)
+  serverConfig: ServerConfig | null;
   
   // Game state from server
   gameState: GameState | null;
@@ -139,6 +192,7 @@ export function useGameSocket(options: UseGameSocketOptions = {}): UseGameSocket
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [latency, setLatency] = useState(0);
+  const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [userData, setUserData] = useState<UserData | null>(null);
   
@@ -197,6 +251,12 @@ export function useGameSocket(options: UseGameSocketOptions = {}): UseGameSocket
       setIsConnected(false);
     });
     
+    // Receive server config (SINGLE SOURCE OF TRUTH)
+    socket.on('serverConfig', (config: ServerConfig) => {
+      console.log('[GameSocket] Server config received');
+      setServerConfig(config);
+    });
+    
     // Receive authoritative game state from server
     socket.on('gameState', (state: GameState) => {
       setGameState(state);
@@ -211,7 +271,9 @@ export function useGameSocket(options: UseGameSocketOptions = {}): UseGameSocket
           // Bet was resolved (no longer in active bets or status changed)
           if (!currentBet || (currentBet.status !== 'pending' && currentBet.status !== 'placing')) {
             if (prevBet.status === 'pending' || prevBet.status === 'placing') {
-              onBetResolved(currentBet || { ...prevBet, status: 'lost' });
+              const resolvedBet = currentBet || { ...prevBet, status: 'lost' as const };
+              const won = resolvedBet.status === 'won';
+              onBetResolved(resolvedBet, won);
             }
           }
         }
@@ -349,6 +411,7 @@ export function useGameSocket(options: UseGameSocketOptions = {}): UseGameSocket
     isConnected,
     error,
     latency,
+    serverConfig,
     gameState,
     userData,
     placeBet,

@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react';
-import { GAME_CONFIG } from '@/lib/game/gameConfig';
+import { DEFAULT_SERVER_CONFIG } from '@/lib/game/gameConfig';
 
 interface PricePoint {
   price: number;
@@ -112,18 +112,20 @@ export function useAutoPlay({
     
     const trend = analyzeTrend();
     // IMPORTANT: Use zoomed cell size to match game engine
-    const zoomLevel = GAME_CONFIG.ZOOM_LEVELS[zoomIndex] || 1.0;
-    const baseCellSize = isMobile ? GAME_CONFIG.CELL_SIZE_MOBILE : GAME_CONFIG.CELL_SIZE;
+    // TODO: Pass server config via props when socket hook is integrated
+    const cfg = DEFAULT_SERVER_CONFIG;
+    const zoomLevel = cfg.zoomLevels[zoomIndex] || 1.0;
+    const baseCellSize = isMobile ? cfg.cellSizeMobile : cfg.cellSize;
     const cellSize = Math.floor(baseCellSize * zoomLevel);
-    const headX = isMobile ? GAME_CONFIG.HEAD_X_MOBILE : GAME_CONFIG.HEAD_X;
+    const headX = isMobile ? cfg.headXMobile : cfg.headX;
     
     // Use the actual minimum bet distance from config
     const minBetColumnsAhead = isMobile 
-      ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE 
-      : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+      ? cfg.minBetColumnsAheadMobile 
+      : cfg.minBetColumnsAhead;
     
     // Virtual dimensions (what the game renders to after cameraScale is applied)
-    const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+    const cameraScale = isMobile ? cfg.mobileCameraScale : 1;
     const virtualWidth = canvas.width / cameraScale;
     const virtualHeight = canvas.height / cameraScale;
     

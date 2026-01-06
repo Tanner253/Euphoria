@@ -12,7 +12,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect, Rea
 import PhantomWallet from '@/lib/wallet/PhantomWallet';
 import X403Service from '@/lib/wallet/X403Service';
 import { getGameSounds } from '@/lib/audio/GameSounds';
-import { gameAPI } from '@/lib/services/GameAPI';
+// NOTE: All game operations now go through Socket.io - no REST API for bets
 
 interface WalletContextType {
   // Connection state
@@ -150,11 +150,6 @@ export function WalletProvider({ children }: WalletProviderProps) {
       localStorage.setItem(DEMO_BALANCE_KEY, demoBalance.toString());
     }
   }, [demoBalance, isDemoMode]);
-
-  // Sync auth token with GameAPI for server-authoritative betting
-  useEffect(() => {
-    gameAPI.setToken(authToken);
-  }, [authToken]);
 
   const refreshBalance = useCallback(async () => {
     if (authToken) {

@@ -1,6 +1,8 @@
 /**
  * Server-side game configuration
- * This is the AUTHORITATIVE source - clients must match these values
+ * This is the SINGLE SOURCE OF TRUTH for all game settings.
+ * Clients MUST fetch this config from the server and use it.
+ * DO NOT duplicate these values in client code.
  */
 
 export const SERVER_CONFIG = {
@@ -12,21 +14,30 @@ export const SERVER_CONFIG = {
   TICK_RATE: 60, // 60 updates per second
   TICK_MS: 1000 / 60,
   
-  // Grid settings (must match client)
+  // Grid settings
   CELL_SIZE: 50,
   CELL_SIZE_MOBILE: 40,
   
-  // Zoom levels
+  // Zoom levels and labels
   ZOOM_LEVELS: [2.0, 1.0, 0.75] as const,
+  ZOOM_LABELS: ['Low Risk', 'Medium', 'High Risk'] as const,
   
-  // Grid speed based on volatility - MUST MATCH CLIENT
+  // Grid speed based on volatility
   GRID_SPEED_ACTIVE: 1,
   GRID_SPEED_LOW: 0.25,
   GRID_SPEED_IDLE: 0.05,
   GRID_SPEED_MIN: 0.03,
   
-  // Price visualization - MUST MATCH CLIENT
+  // Price visualization
   PRICE_SCALE: 8000,
+  
+  // Betting rules
+  MIN_BET_COLUMNS_AHEAD: 8,         // Desktop: force bets further ahead
+  MIN_BET_COLUMNS_AHEAD_MOBILE: 5,  // Mobile: fewer columns due to screen width
+  BET_AMOUNT_OPTIONS: [10, 25, 50, 100] as const,
+  BET_AMOUNT_OPTIONS_MOBILE: [1, 5, 10] as const,
+  MAX_BET_AMOUNT: 100,
+  MIN_BET_AMOUNT: 1,
   
   // === SMOOTHING SETTINGS ===
   // These create smooth, natural price line movement
@@ -62,6 +73,11 @@ export const SERVER_CONFIG = {
   HEAD_X: 450,
   HEAD_X_MOBILE: 60,
   VERTICAL_CELLS: 60,
+  PRICE_AXIS_WIDTH: 80,
+  PRICE_AXIS_WIDTH_MOBILE: 40,
+  SIDEBAR_WIDTH: 56,
+  SIDEBAR_WIDTH_MOBILE: 44,
+  MOBILE_CAMERA_SCALE: 0.55,
   
   // House edge (subtle - should not be visibly obvious)
   // MUST MATCH CLIENT GAME_CONFIG.WIN_ZONE_MARGIN
@@ -75,4 +91,58 @@ export const SERVER_CONFIG = {
 } as const;
 
 export type ServerConfig = typeof SERVER_CONFIG;
+
+/**
+ * Get client-facing config (excludes server-internal settings)
+ * This is what gets sent to clients on connect
+ */
+export function getClientConfig() {
+  return {
+    // Grid
+    cellSize: SERVER_CONFIG.CELL_SIZE,
+    cellSizeMobile: SERVER_CONFIG.CELL_SIZE_MOBILE,
+    
+    // Zoom
+    zoomLevels: SERVER_CONFIG.ZOOM_LEVELS,
+    zoomLabels: SERVER_CONFIG.ZOOM_LABELS,
+    
+    // Grid speed
+    gridSpeedActive: SERVER_CONFIG.GRID_SPEED_ACTIVE,
+    gridSpeedLow: SERVER_CONFIG.GRID_SPEED_LOW,
+    gridSpeedIdle: SERVER_CONFIG.GRID_SPEED_IDLE,
+    gridSpeedMin: SERVER_CONFIG.GRID_SPEED_MIN,
+    
+    // Price
+    priceScale: SERVER_CONFIG.PRICE_SCALE,
+    priceSmoothing: SERVER_CONFIG.PRICE_SMOOTHING,
+    flatlineThreshold: SERVER_CONFIG.FLATLINE_THRESHOLD,
+    flatlineWindow: SERVER_CONFIG.FLATLINE_WINDOW,
+    
+    // Betting rules
+    minBetColumnsAhead: SERVER_CONFIG.MIN_BET_COLUMNS_AHEAD,
+    minBetColumnsAheadMobile: SERVER_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE,
+    betAmountOptions: SERVER_CONFIG.BET_AMOUNT_OPTIONS,
+    betAmountOptionsMobile: SERVER_CONFIG.BET_AMOUNT_OPTIONS_MOBILE,
+    maxBetAmount: SERVER_CONFIG.MAX_BET_AMOUNT,
+    minBetAmount: SERVER_CONFIG.MIN_BET_AMOUNT,
+    
+    // House edge
+    winZoneMargin: SERVER_CONFIG.WIN_ZONE_MARGIN,
+    
+    // Layout
+    headX: SERVER_CONFIG.HEAD_X,
+    headXMobile: SERVER_CONFIG.HEAD_X_MOBILE,
+    verticalCells: SERVER_CONFIG.VERTICAL_CELLS,
+    priceAxisWidth: SERVER_CONFIG.PRICE_AXIS_WIDTH,
+    priceAxisWidthMobile: SERVER_CONFIG.PRICE_AXIS_WIDTH_MOBILE,
+    sidebarWidth: SERVER_CONFIG.SIDEBAR_WIDTH,
+    sidebarWidthMobile: SERVER_CONFIG.SIDEBAR_WIDTH_MOBILE,
+    mobileCameraScale: SERVER_CONFIG.MOBILE_CAMERA_SCALE,
+    
+    // Server info
+    tickRate: SERVER_CONFIG.TICK_RATE,
+  };
+}
+
+export type ClientConfig = ReturnType<typeof getClientConfig>;
 
