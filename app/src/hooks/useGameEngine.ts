@@ -2290,22 +2290,23 @@ export function useGameEngine({
         }
         
         // DEBUG: Win zone indicator - shows hitbox for pending bets
+        // COMMENTED OUT: Winzone overlay removed from client
         // With WIN_ZONE_MARGIN=0, the entire cell is the win zone
-        if (isPending) {
-          ctx.strokeStyle = '#00ffff';
-          ctx.lineWidth = 2;
-          ctx.setLineDash([4, 2]);
-          ctx.strokeRect(screenX + 1, y + 1, cellSize - 2, cellSize - 2);
-          ctx.setLineDash([]);
-          
-          // DEBUG: Show yIndex and cell Y range on the cell
-          ctx.fillStyle = '#00ffff';
-          ctx.font = '10px monospace';
-          ctx.textAlign = 'left';
-          ctx.fillText(`y=${bet.yIndex}`, screenX + 4, y + 12);
-          ctx.fillText(`${bet.yIndex * cellSize}-${(bet.yIndex + 1) * cellSize}`, screenX + 4, y + 24);
-          ctx.textAlign = 'center';
-        }
+        // if (isPending) {
+        //   ctx.strokeStyle = '#00ffff';
+        //   ctx.lineWidth = 2;
+        //   ctx.setLineDash([4, 2]);
+        //   ctx.strokeRect(screenX + 1, y + 1, cellSize - 2, cellSize - 2);
+        //   ctx.setLineDash([]);
+        //   
+        //   // DEBUG: Show yIndex and cell Y range on the cell
+        //   ctx.fillStyle = '#00ffff';
+        //   ctx.font = '10px monospace';
+        //   ctx.textAlign = 'left';
+        //   ctx.fillText(`y=${bet.yIndex}`, screenX + 4, y + 12);
+        //   ctx.fillText(`${bet.yIndex * cellSize}-${(bet.yIndex + 1) * cellSize}`, screenX + 4, y + 24);
+        //   ctx.textAlign = 'center';
+        // }
       });
       
       // ✨ SPECIAL CELLS - Render with glowing rainbow effect
@@ -2449,13 +2450,14 @@ export function useGameEngine({
         ctx.fill();
         
         // DEBUG: Show priceY coordinate and which cell it's in
-        const priceYCell = Math.floor(state.priceY / cellSize);
-        ctx.fillStyle = '#00ffff';
-        ctx.font = 'bold 11px monospace';
-        ctx.textAlign = 'left';
-        ctx.fillText(`priceY=${state.priceY.toFixed(1)}`, headX + 15, state.priceY - 10);
-        ctx.fillText(`cell=${priceYCell} (${priceYCell * cellSize}-${(priceYCell + 1) * cellSize})`, headX + 15, state.priceY + 5);
-        ctx.textAlign = 'center';
+        // COMMENTED OUT: Price head information removed
+        // const priceYCell = Math.floor(state.priceY / cellSize);
+        // ctx.fillStyle = '#00ffff';
+        // ctx.font = 'bold 11px monospace';
+        // ctx.textAlign = 'left';
+        // ctx.fillText(`priceY=${state.priceY.toFixed(1)}`, headX + 15, state.priceY - 10);
+        // ctx.fillText(`cell=${priceYCell} (${priceYCell * cellSize}-${(priceYCell + 1) * cellSize})`, headX + 15, state.priceY + 5);
+        // ctx.textAlign = 'center';
         
         // === CHAT BUBBLE above price head ===
         const chatBubble = chatBubbleRef.current;
