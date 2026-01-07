@@ -231,7 +231,7 @@ export default function PredictionMarket() {
           {/* URL hint */}
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 rounded-xl">
             <span className="text-white/40 text-xs">Visit</span>
-            <span className="text-purple-400 font-mono text-sm">euphoria.gg</span>
+            <span className="text-purple-400 font-mono text-sm">predicteuphoria.com</span>
           </div>
           
           {/* Coming soon note */}

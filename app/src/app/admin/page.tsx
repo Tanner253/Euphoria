@@ -132,22 +132,43 @@ export default function AdminPage() {
   // Use socket data when available
   useEffect(() => {
     if (useSocket && socketData) {
+      // Calculate SOL stats from USERS (more reliable - tracks lifetime totals)
+      // User fields are stored in lamports (1 SOL = 1e9 lamports)
+      const totalDeposited = socketData.users.reduce((sum, u) => sum + (u.totalDeposited || 0), 0) / 1e9;
+      const totalWithdrawn = socketData.users.reduce((sum, u) => sum + (u.totalWithdrawn || 0), 0) / 1e9;
+      
+      // Pending withdrawals still need to come from transactions
+      const pendingWithdrawals = socketData.transactions.filter(t => t.type === 'withdrawal' && (t.status === 'pending' || t.status === 'awaiting_approval'));
+      const pendingWithdrawalsSol = pendingWithdrawals.reduce((sum, t) => sum + (t.solAmount || 0), 0) / 1e9;
+      
+      // Calculate hourly stats (last hour)
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      const hourlyDeposits = socketData.transactions.filter(t => t.type === 'deposit' && new Date(t.createdAt) >= oneHourAgo);
+      const hourlyWithdrawals = socketData.transactions.filter(t => t.type === 'withdrawal' && new Date(t.createdAt) >= oneHourAgo);
+      const hourlyBets = socketData.bets.filter(b => new Date(b.createdAt) >= oneHourAgo);
+      
+      // Calculate daily stats (last 24 hours)
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const dailyDeposits = socketData.transactions.filter(t => t.type === 'deposit' && new Date(t.createdAt) >= oneDayAgo);
+      const dailyWithdrawals = socketData.transactions.filter(t => t.type === 'withdrawal' && new Date(t.createdAt) >= oneDayAgo);
+      const dailyBets = socketData.bets.filter(b => new Date(b.createdAt) >= oneDayAgo);
+      
       // Transform socket data to match DashboardData format
       const transformedData: DashboardData = {
         timestamp: new Date().toISOString(),
         stats: {
           users: socketData.stats.users,
           sol: {
-            totalDeposited: 0,
-            totalWithdrawn: 0,
-            pendingWithdrawals: 0,
-            netCustodialBalance: 0,
-            houseProfit: 0,
+            totalDeposited,
+            totalWithdrawn,
+            pendingWithdrawals: pendingWithdrawalsSol,
+            netCustodialBalance: totalDeposited - totalWithdrawn - pendingWithdrawalsSol,
+            houseProfit: totalDeposited - totalWithdrawn,
           },
           transactions: {
             totalDeposits: socketData.transactions.filter(t => t.type === 'deposit').length,
             totalWithdrawals: socketData.transactions.filter(t => t.type === 'withdrawal').length,
-            pendingWithdrawals: socketData.transactions.filter(t => t.type === 'withdrawal' && t.status === 'pending').length,
+            pendingWithdrawals: pendingWithdrawals.length,
             failedCount: socketData.transactions.filter(t => t.status === 'failed').length,
           },
           betting: {
@@ -157,8 +178,24 @@ export default function AdminPage() {
               : 0,
           },
         },
-        hourly: { deposits: { count: 0, sol: 0 }, withdrawals: { count: 0, sol: 0 }, netFlow: 0, bets: { total: 0, wins: 0, losses: 0 }, gemsWon: 0, gemsLost: 0, houseProfit: 0 },
-        daily: { deposits: { count: 0, sol: 0 }, withdrawals: { count: 0, sol: 0 }, netFlow: 0, bets: { total: 0, wins: 0, losses: 0 }, gemsWon: 0, gemsLost: 0, houseProfit: 0 },
+        hourly: {
+          deposits: { count: hourlyDeposits.length, sol: hourlyDeposits.reduce((s, t) => s + (t.solAmount || 0), 0) / 1e9 },
+          withdrawals: { count: hourlyWithdrawals.length, sol: hourlyWithdrawals.reduce((s, t) => s + (t.solAmount || 0), 0) / 1e9 },
+          netFlow: (hourlyDeposits.reduce((s, t) => s + (t.solAmount || 0), 0) - hourlyWithdrawals.reduce((s, t) => s + (t.solAmount || 0), 0)) / 1e9,
+          bets: { total: hourlyBets.length, wins: hourlyBets.filter(b => b.status === 'won').length, losses: hourlyBets.filter(b => b.status === 'lost').length },
+          gemsWon: hourlyBets.filter(b => b.status === 'won').reduce((s, b) => s + (b.actualWin || 0), 0),
+          gemsLost: hourlyBets.filter(b => b.status === 'lost').reduce((s, b) => s + b.amount, 0),
+          houseProfit: hourlyBets.filter(b => b.status === 'lost').reduce((s, b) => s + b.amount, 0) - hourlyBets.filter(b => b.status === 'won').reduce((s, b) => s + ((b.actualWin || 0) - b.amount), 0),
+        },
+        daily: {
+          deposits: { count: dailyDeposits.length, sol: dailyDeposits.reduce((s, t) => s + (t.solAmount || 0), 0) / 1e9 },
+          withdrawals: { count: dailyWithdrawals.length, sol: dailyWithdrawals.reduce((s, t) => s + (t.solAmount || 0), 0) / 1e9 },
+          netFlow: (dailyDeposits.reduce((s, t) => s + (t.solAmount || 0), 0) - dailyWithdrawals.reduce((s, t) => s + (t.solAmount || 0), 0)) / 1e9,
+          bets: { total: dailyBets.length, wins: dailyBets.filter(b => b.status === 'won').length, losses: dailyBets.filter(b => b.status === 'lost').length },
+          gemsWon: dailyBets.filter(b => b.status === 'won').reduce((s, b) => s + (b.actualWin || 0), 0),
+          gemsLost: dailyBets.filter(b => b.status === 'lost').reduce((s, b) => s + b.amount, 0),
+          houseProfit: dailyBets.filter(b => b.status === 'lost').reduce((s, b) => s + b.amount, 0) - dailyBets.filter(b => b.status === 'won').reduce((s, b) => s + ((b.actualWin || 0) - b.amount), 0),
+        },
         alerts: socketData.alerts.map(a => ({ ...a, type: a.type as 'error' | 'warning' | 'info' })),
         transactions: socketData.transactions.map(tx => ({
           id: tx._id?.toString() || '',
