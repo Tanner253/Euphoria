@@ -196,24 +196,26 @@ export default function LeftSidebar({
           </div>
         </div>
         
-        {/* Mobile Floating Controls - Top Right - pointer-events-none on container */}
-        <div className="fixed top-2 right-2 z-40 flex gap-2 pointer-events-none">
-          {/* Risk Toggle - HIDDEN on mobile (locked to Low Risk mode) */}
-          
-          {/* Music Toggle */}
+        {/* Mobile Floating Controls - Top Right Row 1 (main actions) */}
+        <div className="fixed top-2 right-2 z-40 flex gap-1.5 pointer-events-none">
+          {/* Risk Level Toggle */}
           <button
-            onClick={toggleMusic}
+            onClick={onCycleZoom}
+            disabled={zoomLocked}
             className={`pointer-events-auto w-10 h-10 rounded-xl flex items-center justify-center active:scale-95 transition-transform ${
-              isMusicPlaying 
-                ? 'bg-purple-500/30 border border-purple-500/40' 
-                : 'bg-black/60 border border-white/20'
+              zoomLocked 
+                ? 'bg-gray-500/30 border border-gray-500/40' 
+                : zoomIndex === 0 ? 'bg-green-500/30 border border-green-500/40'
+                : zoomIndex === 1 ? 'bg-yellow-500/30 border border-yellow-500/40'
+                : 'bg-red-500/30 border border-red-500/40'
             }`}
           >
-            {isMusicPlaying ? (
-              <Music size={18} className="text-purple-400" />
-            ) : (
-              <VolumeX size={18} className="text-white/40" />
-            )}
+            <ZoomOut size={18} className={
+              zoomLocked ? "text-gray-400" 
+              : zoomIndex === 0 ? "text-green-400"
+              : zoomIndex === 1 ? "text-yellow-400"
+              : "text-red-400"
+            } />
           </button>
           
           {/* Profile/Connect */}
@@ -239,6 +241,25 @@ export default function LeftSidebar({
             className="pointer-events-auto w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center active:scale-95 transition-transform"
           >
             <Map size={18} className="text-white" />
+          </button>
+        </div>
+        
+        {/* Mobile Floating Controls - Top Right Row 2 (secondary actions) */}
+        <div className="fixed top-14 right-2 z-40 flex gap-1.5 pointer-events-none">
+          {/* Music Toggle */}
+          <button
+            onClick={toggleMusic}
+            className={`pointer-events-auto w-10 h-10 rounded-xl flex items-center justify-center active:scale-95 transition-transform ${
+              isMusicPlaying 
+                ? 'bg-purple-500/30 border border-purple-500/40' 
+                : 'bg-black/60 border border-white/20'
+            }`}
+          >
+            {isMusicPlaying ? (
+              <Music size={18} className="text-purple-400" />
+            ) : (
+              <VolumeX size={18} className="text-white/40" />
+            )}
           </button>
           
           {/* Leaderboard */}

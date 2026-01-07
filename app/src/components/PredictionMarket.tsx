@@ -45,7 +45,13 @@ export default function PredictionMarket() {
   const [showChat, setShowChat] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [showWalletAuth, setShowWalletAuth] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
+  // Initialize isMobile synchronously to avoid race condition with socket connection
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 640 || (window.innerWidth < 1024 && window.innerHeight > window.innerWidth);
+    }
+    return false;
+  });
   const [isAutoPlaying, setIsAutoPlaying] = useState(false);
   
   // Balance management - use server balance when authenticated
@@ -142,12 +148,22 @@ export default function PredictionMarket() {
     onPlaceBet: placeBetAt,
   });
 
-  // Check for mobile
+  // Check for mobile - includes portrait tablets/phones
   useEffect(() => {
-    const checkMobile = () => setIsMobile(window.innerWidth < 640);
+    const checkMobile = () => {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      // Mobile if: narrow screen OR portrait orientation on smaller devices
+      const isMobileDevice = width < 640 || (width < 1024 && height > width);
+      setIsMobile(isMobileDevice);
+    };
     checkMobile();
     window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
+    window.addEventListener('orientationchange', checkMobile);
+    return () => {
+      window.removeEventListener('resize', checkMobile);
+      window.removeEventListener('orientationchange', checkMobile);
+    };
   }, []);
 
   // Update price in game engine

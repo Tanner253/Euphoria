@@ -5,7 +5,7 @@
  */
 
 import { useState } from 'react';
-import { Map, X, Rocket, Coins, Zap, Globe, Check, Circle, Github, Shield, Wallet, Server, ArrowDownToLine, ArrowUpFromLine, Clock } from 'lucide-react';
+import { Map, X, Rocket, Coins, Zap, Globe, Check, Circle, Github, Shield, Wallet, Server, ArrowDownToLine, ArrowUpFromLine, Clock, Trophy, MessageCircle, ZoomOut } from 'lucide-react';
 
 interface RoadmapPhase {
   id: number;
@@ -30,6 +30,8 @@ const ROADMAP_PHASES: RoadmapPhase[] = [
       { text: "Dynamic volatility-based scroll speed", done: true },
       { text: "Click & drag bet placement", done: true },
       { text: "Win/loss sound effects & visual feedback", done: true },
+      { text: "Arcade background music system", done: true },
+      { text: "Mobile responsive design", done: true },
     ]
   },
   {
@@ -65,30 +67,33 @@ const ROADMAP_PHASES: RoadmapPhase[] = [
   {
     id: 3,
     title: "Phase 4: Social & Compete",
-    status: "upcoming",
+    status: "current",
     icon: Globe,
     color: "from-blue-500 to-cyan-400",
     items: [
-      { text: "Global leaderboards", done: false },
-      { text: "Live player activity feed", done: false },
+      { text: "Global leaderboards (top players, recent wins)", done: true },
+      { text: "Live online player indicators", done: true },
+      { text: "Global chat with wallet identity", done: true },
+      { text: "Risk level modes (Low/Medium/High)", done: true },
+      { text: "Bet heatmap visualization", done: true },
       { text: "Tournaments & competitions", done: false },
-      { text: "Achievement badges", done: false },
-      { text: "Social sharing integration", done: false },
+      { text: "Achievement badges & streaks", done: false },
       { text: "Referral rewards program", done: false },
     ]
   },
   {
     id: 4,
     title: "Phase 5: Advanced",
-    status: "future",
+    status: "upcoming",
     icon: Zap,
     color: "from-red-500 to-pink-600",
     items: [
-      { text: "Multiple trading pairs (BTC, ETH)", done: false },
-      { text: "Custom bet multiplier ranges", done: false },
+      { text: "Multiple trading pairs (BTC, ETH, memecoins)", done: false },
+      { text: "Custom bet amount input", done: false },
       { text: "Mobile native apps (iOS/Android)", done: false },
-      { text: "API for third-party integration", done: false },
-      { text: "Advanced analytics dashboard", done: false },
+      { text: "Public API for integrations", done: false },
+      { text: "Advanced player analytics", done: false },
+      { text: "Social sharing (wins, streaks)", done: false },
     ]
   },
 ];
@@ -99,7 +104,7 @@ interface RoadmapModalProps {
 }
 
 export default function RoadmapModal({ isOpen, onClose }: RoadmapModalProps) {
-  const [activePhase, setActivePhase] = useState(1); // Start on current phase
+  const [activePhase, setActivePhase] = useState(3); // Start on current phase (Phase 4)
 
   if (!isOpen) return null;
 
@@ -258,6 +263,7 @@ function PhaseContent({ phase, isActive }: { phase: RoadmapPhase; isActive: bool
       {/* Phase-specific extra content */}
       {phase.id === 1 && <Phase2InfoCards />}
       {phase.id === 2 && <Phase3InfoCard />}
+      {phase.id === 3 && <Phase4InfoCard />}
     </div>
   );
 }
@@ -367,6 +373,62 @@ function Phase3InfoCard() {
               This ensures the custodial wallet always has enough SOL to cover legitimate withdrawals.
               Won gems can be used to keep playing!
             </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Phase4InfoCard() {
+  return (
+    <div className="mt-4 sm:mt-6 space-y-3">
+      <div className="p-3 sm:p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg sm:rounded-xl">
+        <div className="flex items-start gap-2 sm:gap-3">
+          <Trophy size={18} className="text-blue-400 flex-shrink-0 mt-0.5 sm:w-5 sm:h-5" />
+          <div>
+            <h4 className="font-bold text-white text-sm sm:text-base mb-1">Live Leaderboards</h4>
+            <p className="text-white/60 text-xs sm:text-sm">
+              Compete for the top spot! Leaderboards show top players by total winnings, 
+              recent big wins, and online players. See who&apos;s dominating the grid in real-time.
+            </p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-[10px] rounded-full">Top Winners</span>
+              <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-[10px] rounded-full">Recent Wins</span>
+              <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-[10px] rounded-full">Online Now</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div className="p-3 sm:p-4 bg-cyan-500/10 border border-cyan-500/20 rounded-lg sm:rounded-xl">
+        <div className="flex items-start gap-2 sm:gap-3">
+          <MessageCircle size={18} className="text-cyan-400 flex-shrink-0 mt-0.5 sm:w-5 sm:h-5" />
+          <div>
+            <h4 className="font-bold text-white text-sm sm:text-base mb-1">Global Chat</h4>
+            <p className="text-white/60 text-xs sm:text-sm">
+              Chat with other players in real-time. Your wallet address is your identity - 
+              no usernames needed. Share strategies, celebrate wins, and connect with the community.
+            </p>
+          </div>
+        </div>
+      </div>
+      
+      <div className="p-3 sm:p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg sm:rounded-xl">
+        <div className="flex items-start gap-2 sm:gap-3">
+          <ZoomOut size={18} className="text-purple-400 flex-shrink-0 mt-0.5 sm:w-5 sm:h-5" />
+          <div>
+            <h4 className="font-bold text-white text-sm sm:text-base mb-1">Risk Level Modes</h4>
+            <p className="text-white/60 text-xs sm:text-sm">
+              Choose your risk! Low Risk (2x zoom) has larger cells and easier wins. 
+              High Risk (0.75x zoom) has smaller cells but much higher payouts. 
+              Switch anytime when you don&apos;t have active bets.
+            </p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-[10px] rounded-full">Low Risk: 1.6x+</span>
+              <span className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 text-[10px] rounded-full">Medium: 2.1x+</span>
+              <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded-full">High Risk: 3.1x+</span>
+            </div>
           </div>
         </div>
       </div>

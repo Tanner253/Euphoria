@@ -1011,6 +1011,9 @@ export function useGameEngine({
     onTotalLostChangeRef.current = onTotalLostChange;
   }, [onBalanceChange, onWin, onTotalWonChange, onTotalLostChange]);
   
+  // Track if we've sent initial zoom to server (prevent duplicates)
+  const initialZoomSentRef = useRef(false);
+  
   // Use shared socket connection from context for server-authoritative game
   useEffect(() => {
     if (!socket || !isConnected) return;
@@ -1018,19 +1021,16 @@ export function useGameEngine({
     socketRef.current = socket;
     console.log('[GameEngine] Using shared socket connection');
     
-    // Get current zoom level from config
-    const cfg = serverConfigRef.current;
-    const currentZoomLevel = cfg?.zoomLevels[zoomIndex] ?? 1.0;
-    
     // Identify wallet for authenticated bet placement
-    // Also send zoom level so server can track it (SERVER-AUTHORITATIVE)
+    // Zoom is sent separately by the zoom useEffect below
     if (walletAddress) {
+      const cfg = serverConfigRef.current;
+      const currentZoomLevel = cfg?.zoomLevels[zoomIndex] ?? 1.0;
       socket.emit('identify', { walletAddress, isMobile, zoomLevel: currentZoomLevel });
       console.log('[GameEngine] Identified wallet:', walletAddress.slice(0, 8), 'zoom:', currentZoomLevel);
-    } else {
-      // Even without wallet, tell server our zoom preference
-      socket.emit('setZoom', { zoomLevel: currentZoomLevel, isMobile });
+      initialZoomSentRef.current = true; // identify includes zoom
     }
+    // Note: If no wallet, zoom is sent by the separate zoom useEffect
     
     // Note: serverConfig is handled by SocketContext and synced via useEffect above
     
@@ -1234,7 +1234,7 @@ export function useGameEngine({
       socket.off('betResolved');
       socket.off('balanceUpdate');
     };
-  }, [socket, isConnected, isMobile, zoomLevel, walletAddress]);
+  }, [socket, isConnected, walletAddress, isMobile, zoomIndex]);
   
   // Track tab visibility to handle price jumps smoothly
   const lastFrameTimeRef = useRef<number>(Date.now());
@@ -2423,13 +2423,19 @@ export function useGameEngine({
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         
+        // Server priceHistory uses desktop headX (450), but mobile uses headXMobile (60)
+        // We need to offset the line X coordinates to match the mobile headX
+        const serverHeadX = config.headX; // Server always uses desktop headX (450)
+        const clientHeadX = headX; // Client uses mobile or desktop based on isMobile
+        const headXOffset = isMobile ? (clientHeadX - serverHeadX) : 0;
+        
         ctx.beginPath();
         const firstPoint = state.priceHistory[0];
-        ctx.moveTo(firstPoint.x - state.offsetX, firstPoint.y);
+        ctx.moveTo(firstPoint.x - state.offsetX + headXOffset, firstPoint.y);
         
         for (let i = 1; i < state.priceHistory.length; i++) {
           const p = state.priceHistory[i];
-          ctx.lineTo(p.x - state.offsetX, p.y);
+          ctx.lineTo(p.x - state.offsetX + headXOffset, p.y);
         }
         ctx.stroke();
         ctx.shadowBlur = 0;
@@ -2884,10 +2890,17 @@ export function useGameEngine({
   }, [isMobile]);
   
   // SERVER-AUTHORITATIVE: Notify server when zoom changes
+  // Skip if initial zoom was already sent via identify
   useEffect(() => {
     const socket = socketRef.current;
     const cfg = serverConfigRef.current;
     if (!socket?.connected || !cfg) return;
+    
+    // Skip first emission if we already sent zoom via identify
+    if (initialZoomSentRef.current) {
+      initialZoomSentRef.current = false; // Reset so future changes are sent
+      return;
+    }
     
     const newZoomLevel = cfg.zoomLevels[zoomIndex] ?? 1.0;
     socket.emit('setZoom', { zoomLevel: newZoomLevel, isMobile });
