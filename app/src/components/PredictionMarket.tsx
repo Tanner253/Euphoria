@@ -191,6 +191,58 @@ export default function PredictionMarket() {
     handlePointerMove(e);
   }, [showRoadmap, handlePointerMove]);
 
+  // Block mobile users - show desktop-only message
+  if (isMobile) {
+    return (
+      <div 
+        className="relative w-full flex items-center justify-center font-sans select-none bg-gradient-to-br from-[#1a0a2e] via-[#0a0014] to-[#12001f]"
+        style={{ height: '100dvh' }}
+      >
+        <div className="text-center px-8 max-w-md">
+          {/* Icon */}
+          <div className="mb-6 flex justify-center">
+            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 border border-purple-500/30 flex items-center justify-center">
+              <svg 
+                viewBox="0 0 24 24" 
+                className="w-10 h-10 text-purple-400"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              >
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+            </div>
+          </div>
+          
+          {/* Title */}
+          <h1 className="text-2xl font-bold text-white mb-3">
+            Desktop Only
+          </h1>
+          
+          {/* Message */}
+          <p className="text-white/60 text-sm leading-relaxed mb-6">
+            Euphoria is optimized for desktop browsers. 
+            For the best experience with precise betting controls, 
+            please visit us on your computer.
+          </p>
+          
+          {/* URL hint */}
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 rounded-xl">
+            <span className="text-white/40 text-xs">Visit</span>
+            <span className="text-purple-400 font-mono text-sm">euphoria.gg</span>
+          </div>
+          
+          {/* Coming soon note */}
+          <p className="mt-8 text-white/30 text-xs">
+            📱 Mobile support coming soon!
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative w-full overflow-hidden font-sans select-none" style={{ height: '100dvh' }}>
       {/* Left Sidebar Navigation */}
