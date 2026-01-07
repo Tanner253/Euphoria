@@ -192,7 +192,7 @@ export default function PredictionMarket() {
   }, [showRoadmap, handlePointerMove]);
 
   return (
-    <div className="relative w-full h-screen overflow-hidden font-sans select-none">
+    <div className="relative w-full overflow-hidden font-sans select-none" style={{ height: '100dvh' }}>
       {/* Left Sidebar Navigation */}
       <LeftSidebar
         displayPrice={displayPrice}
@@ -224,7 +224,7 @@ export default function PredictionMarket() {
             className="block cursor-crosshair"
             style={{ 
               width: `calc(100vw - ${sidebarWidth}px)`, 
-              height: '100vh',
+              height: '100dvh',  // Use dynamic viewport height for mobile browser compatibility
               touchAction: 'none'  // Critical for mobile touch handling
             }}
             onPointerDown={onPointerDown}

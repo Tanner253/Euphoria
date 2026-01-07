@@ -1302,15 +1302,21 @@ export function useGameEngine({
     state.priceY = cellSize / 2;
     state.targetPriceY = cellSize / 2;
     state.priceHistory = [{ x: headX, y: cellSize / 2 }];
-    // Use virtual height for camera (accounts for mobile zoom-out)
+    // Use canvas actual dimensions for consistent coordinate system
+    const canvas = canvasRef.current;
+    const canvasRect = canvas?.getBoundingClientRect();
+    const canvasHeight = canvasRect?.height ?? window.innerHeight;
+    const canvasWidth = canvasRect?.width ?? window.innerWidth;
     const initCameraScale = isMobile ? cfg.mobileCameraScale : 1;
-    state.cameraY = (window.innerHeight / initCameraScale) / 2;
+    const virtualHeight = canvasHeight / initCameraScale;
+    // Initialize cameraY to center the price line on screen
+    state.cameraY = -(cellSize / 2) + virtualHeight / 2;
     
     // Regenerate columns with proper cells using generateColumn pattern
     // Large buffer for high volatility movement
     const priceY = cellSize / 2;
     const zoomBufferCols = (isMobile ? cfg.minBetColumnsAheadMobile : cfg.minBetColumnsAhead) + 30;
-    for (let x = 0; x < window.innerWidth + cellSize * zoomBufferCols; x += cellSize) {
+    for (let x = 0; x < canvasWidth + cellSize * zoomBufferCols; x += cellSize) {
       const centerYIndex = Math.floor(priceY / cellSize);
       const newCol: Column = {
         id: Math.random().toString(36).substr(2, 9),
@@ -2614,7 +2620,12 @@ export function useGameEngine({
       state.columns = [];
       state.bets = [];
       state.lastGenX = 0;
-      state.cameraY = window.innerHeight / 2;
+      // Use canvas actual dimensions and account for mobile camera scale
+      const cameraScale = isMobile ? config.mobileCameraScale : 1;
+      const canvasHeight = canvas.getBoundingClientRect().height;
+      const virtualHeight = canvasHeight / cameraScale;
+      // Initialize cameraY to center the price line (priceY) on screen
+      state.cameraY = -(cellSize / 2) + virtualHeight / 2;
       state.initialized = true;
       state.recentPrices = [];
       state.currentSpeed = config.gridSpeedActive;
@@ -2623,7 +2634,8 @@ export function useGameEngine({
       // Generate enough columns for the visible area plus large buffer for high volatility
       // Account for zoom level - smaller cells = more columns needed
       const minBetCols = isMobile ? config.minBetColumnsAheadMobile : config.minBetColumnsAhead;
-      const neededWidth = window.innerWidth + cellSize * (minBetCols + 30);
+      const canvasWidth = canvas.getBoundingClientRect().width;
+      const neededWidth = canvasWidth + cellSize * (minBetCols + 30);
       for (let x = 0; x < neededWidth; x += cellSize) {
         generateColumn(x, cellSize / 2);
       }
@@ -2647,8 +2659,11 @@ export function useGameEngine({
       resizeTimeout = setTimeout(() => {
         if (canvasRef.current) {
           const canvas = canvasRef.current;
-          const newWidth = window.innerWidth - sidebarWidth;
-          const newHeight = window.innerHeight;
+          // Use getBoundingClientRect for accurate CSS dimensions
+          // This handles mobile browser quirks where window.innerHeight !== 100vh
+          const rect = canvas.getBoundingClientRect();
+          const newWidth = Math.floor(rect.width);
+          const newHeight = Math.floor(rect.height);
           
           // Only update if dimensions actually changed
           if (canvas.width !== newWidth || canvas.height !== newHeight) {

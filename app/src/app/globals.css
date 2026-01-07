@@ -20,6 +20,21 @@ html, body {
   background: var(--background);
   color: var(--foreground);
   /* Don't globally hide overflow - let pages control their own scrolling */
+  /* Prevent pull-to-refresh on mobile which breaks touch handling */
+  overscroll-behavior: none;
+}
+
+/* Mobile viewport fix - use dvh with vh fallback */
+@supports (height: 100dvh) {
+  :root {
+    --app-height: 100dvh;
+  }
+}
+
+@supports not (height: 100dvh) {
+  :root {
+    --app-height: 100vh;
+  }
 }
 
 /* Custom scrollbar */
