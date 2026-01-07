@@ -5,9 +5,12 @@
  * 
  * Single-page comprehensive monitoring of all system data
  * Shows transactions, users, bets, alerts, and hourly/daily stats in real-time
+ * 
+ * Uses Socket.io for real-time updates - NO POLLING!
  */
 
 import { useEffect, useState, useCallback } from 'react';
+import { useAdminSocket } from '@/hooks/useAdminSocket';
 
 // Types
 interface DashboardData {
@@ -86,41 +89,156 @@ interface DashboardData {
     walletAddress: string | null;
     createdAt: string;
   }>;
+  pendingApprovals: Array<{
+    withdrawalId: string;
+    walletAddress: string;
+    gemsAmount: number;
+    feeAmount: number;
+    netGems: number;
+    solAmount: number;
+    queuePosition: number | null;
+    requestedAt: string;
+  }>;
 }
 
 export default function AdminPage() {
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [data, setData] = useState<DashboardData | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [useSocket, setUseSocket] = useState(true); // Use socket by default
+  const [autoRefresh, setAutoRefresh] = useState(false); // REST polling disabled by default
   const [lastRefresh, setLastRefresh] = useState<string>('');
   const [isMounted, setIsMounted] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionResult, setActionResult] = useState<{ success: boolean; message: string } | null>(null);
   const [userActionModal, setUserActionModal] = useState<{ wallet: string; action: 'ban' | 'suspend' | 'activate' } | null>(null);
+  const [withdrawalModal, setWithdrawalModal] = useState<{ withdrawalId: string; action: 'approve' | 'reject'; wallet: string; sol: number } | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
+  
+  // Socket-based admin data (real-time, no polling!)
+  const { 
+    isConnected: socketConnected, 
+    isSubscribed: socketSubscribed, 
+    data: socketData, 
+    error: socketError,
+    executeAction: socketExecuteAction,
+  } = useAdminSocket({ autoSubscribe: useSocket });
   
   // Prevent hydration mismatch by only rendering dynamic content after mount
   useEffect(() => {
     setIsMounted(true);
   }, []);
+  
+  // Use socket data when available
+  useEffect(() => {
+    if (useSocket && socketData) {
+      // Transform socket data to match DashboardData format
+      const transformedData: DashboardData = {
+        timestamp: new Date().toISOString(),
+        stats: {
+          users: socketData.stats.users,
+          sol: {
+            totalDeposited: 0,
+            totalWithdrawn: 0,
+            pendingWithdrawals: 0,
+            netCustodialBalance: 0,
+            houseProfit: 0,
+          },
+          transactions: {
+            totalDeposits: socketData.transactions.filter(t => t.type === 'deposit').length,
+            totalWithdrawals: socketData.transactions.filter(t => t.type === 'withdrawal').length,
+            pendingWithdrawals: socketData.transactions.filter(t => t.type === 'withdrawal' && t.status === 'pending').length,
+            failedCount: socketData.transactions.filter(t => t.status === 'failed').length,
+          },
+          betting: {
+            ...socketData.stats.betting,
+            houseEdgePercent: socketData.stats.betting.totalWagered > 0 
+              ? (socketData.stats.betting.houseProfit / socketData.stats.betting.totalWagered * 100)
+              : 0,
+          },
+        },
+        hourly: { deposits: { count: 0, sol: 0 }, withdrawals: { count: 0, sol: 0 }, netFlow: 0, bets: { total: 0, wins: 0, losses: 0 }, gemsWon: 0, gemsLost: 0, houseProfit: 0 },
+        daily: { deposits: { count: 0, sol: 0 }, withdrawals: { count: 0, sol: 0 }, netFlow: 0, bets: { total: 0, wins: 0, losses: 0 }, gemsWon: 0, gemsLost: 0, houseProfit: 0 },
+        alerts: socketData.alerts.map(a => ({ ...a, type: a.type as 'error' | 'warning' | 'info' })),
+        transactions: socketData.transactions.map(tx => ({
+          id: tx._id?.toString() || '',
+          type: tx.type,
+          status: tx.status,
+          walletAddress: tx.walletAddress,
+          solAmount: tx.solAmount / 1e9,
+          gemsAmount: tx.gemsAmount,
+          feeAmount: tx.feeAmount || 0,
+          txSignature: tx.txSignature || null,
+          createdAt: tx.createdAt.toString(),
+          confirmedAt: tx.confirmedAt?.toString() || null,
+          notes: tx.notes,
+        })),
+        users: socketData.users.map(u => ({
+          id: u._id?.toString() || '',
+          walletAddress: u.walletAddress,
+          gemsBalance: u.gemsBalance,
+          totalDeposited: u.totalDeposited / 1e9,
+          totalWithdrawn: u.totalWithdrawn / 1e9,
+          totalBets: u.totalBets,
+          totalWins: u.totalWins,
+          totalLosses: u.totalLosses,
+          winRate: u.totalBets > 0 ? (u.totalWins / u.totalBets * 100) : 0,
+          netProfit: 0,
+          status: u.status,
+          createdAt: u.createdAt.toString(),
+          lastActiveAt: u.lastActiveAt.toString(),
+        })),
+        bets: socketData.bets.map(b => ({
+          id: b._id?.toString() || '',
+          walletAddress: b.walletAddress,
+          amount: b.amount,
+          multiplier: b.multiplier,
+          potentialWin: b.potentialWin,
+          actualWin: b.actualWin || 0,
+          status: b.status,
+          priceAtBet: b.priceAtBet,
+          priceAtResolution: b.priceAtResolution || null,
+          createdAt: b.createdAt.toString(),
+          resolvedAt: b.resolvedAt?.toString() || null,
+        })),
+        auditLog: [],
+        pendingApprovals: [],
+      };
+      setData(transformedData);
+      setIsLoading(false);
+      setIsAuthorized(true);
+      setLastRefresh(new Date().toLocaleTimeString());
+    }
+  }, [useSocket, socketData]);
 
-  // Admin action handler
+  // Admin action handler - uses Socket.IO when connected, falls back to REST
   const executeAction = async (action: string, payload?: Record<string, unknown>) => {
     setActionLoading(action);
     setActionResult(null);
     try {
-      const response = await fetch('/api/admin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, ...payload }),
-      });
-      const result = await response.json();
-      if (result.success) {
-        setActionResult({ success: true, message: result.message || 'Action completed successfully' });
-        // Refresh data after action
-        fetchData();
+      // Use socket when connected
+      if (useSocket && socketConnected) {
+        const result = await socketExecuteAction(action, payload);
+        if (result.success) {
+          setActionResult({ success: true, message: (result.result as { message?: string })?.message || 'Action completed successfully' });
+          // Data will be pushed via socket automatically
+        } else {
+          setActionResult({ success: false, message: result.error || 'Action failed' });
+        }
       } else {
-        setActionResult({ success: false, message: result.error || 'Action failed' });
+        // REST fallback
+        const response = await fetch('/api/admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, ...payload }),
+        });
+        const result = await response.json();
+        if (result.success) {
+          setActionResult({ success: true, message: result.message || 'Action completed successfully' });
+          fetchData();
+        } else {
+          setActionResult({ success: false, message: result.error || 'Action failed' });
+        }
       }
     } catch (err) {
       setActionResult({ success: false, message: `Error: ${err}` });
@@ -135,7 +253,26 @@ export default function AdminPage() {
     setUserActionModal(null);
   };
 
+  // Withdrawal approval/rejection handlers
+  const approveWithdrawal = async (withdrawalId: string) => {
+    await executeAction('approve_withdrawal', { withdrawalId });
+    setWithdrawalModal(null);
+  };
+
+  const rejectWithdrawal = async (withdrawalId: string, reason: string) => {
+    await executeAction('reject_withdrawal', { withdrawalId, reason });
+    setWithdrawalModal(null);
+    setRejectionReason('');
+  };
+
+  // REST fallback fetch (used when socket is disabled or for initial auth check)
   const fetchData = useCallback(async () => {
+    if (useSocket && socketConnected) {
+      // Socket is handling data, just update refresh time
+      setLastRefresh(new Date().toLocaleTimeString());
+      return;
+    }
+    
     try {
       setIsLoading(true);
       const response = await fetch('/api/admin');
@@ -154,16 +291,34 @@ export default function AdminPage() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [useSocket, socketConnected]);
 
+  // Initial auth check via REST (socket will take over for data)
   useEffect(() => {
-    fetchData();
-    
-    if (autoRefresh) {
-      const interval = setInterval(fetchData, 5000);
+    if (!useSocket) {
+      fetchData();
+    } else {
+      // Just do auth check
+      fetch('/api/admin').then(response => {
+        if (response.status === 403) {
+          setIsAuthorized(false);
+        } else {
+          setIsAuthorized(true);
+        }
+      }).catch(() => {
+        // Allow socket to work even if REST fails
+        setIsAuthorized(true);
+      });
+    }
+  }, [useSocket, fetchData]);
+
+  // REST polling fallback (only when socket is disabled)
+  useEffect(() => {
+    if (!useSocket && autoRefresh) {
+      const interval = setInterval(fetchData, 30000);
       return () => clearInterval(interval);
     }
-  }, [autoRefresh, fetchData]);
+  }, [useSocket, autoRefresh, fetchData]);
 
   if (isAuthorized === false) {
     return (
@@ -185,6 +340,8 @@ export default function AdminPage() {
     const colors: Record<string, string> = {
       confirmed: 'bg-green-500/20 text-green-400 border-green-500/30',
       pending: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+      awaiting_approval: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+      rejected: 'bg-red-500/20 text-red-400 border-red-500/30',
       cancelled: 'bg-red-500/20 text-red-400 border-red-500/30',
       failed: 'bg-red-500/20 text-red-400 border-red-500/30',
       won: 'bg-green-500/20 text-green-400 border-green-500/30',
@@ -193,6 +350,7 @@ export default function AdminPage() {
       suspended: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
       banned: 'bg-red-500/20 text-red-400 border-red-500/30',
       expired: 'bg-zinc-500/20 text-zinc-400 border-zinc-500/30',
+      processing: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
     };
     return (
       <span className={`px-2 py-0.5 rounded text-xs font-medium border ${colors[status] || 'bg-zinc-500/20 text-zinc-400'}`}>
@@ -227,7 +385,7 @@ export default function AdminPage() {
               onChange={(e) => setAutoRefresh(e.target.checked)}
               className="rounded border-zinc-600 bg-zinc-800"
             />
-            Auto-refresh (5s)
+            Auto-refresh (30s)
           </label>
           <button
             onClick={fetchData}
@@ -308,6 +466,58 @@ export default function AdminPage() {
                 </div>
               </div>
             ))}
+          </div>
+        </section>
+      )}
+
+      {/* Withdrawal Approvals Section */}
+      {data?.pendingApprovals && data.pendingApprovals.length > 0 && (
+        <section className="mb-6">
+          <h2 className="text-lg font-semibold mb-3 text-amber-400 flex items-center gap-2">
+            ⏳ Withdrawals Awaiting Approval ({data.pendingApprovals.length})
+          </h2>
+          <div className="bg-zinc-900/50 rounded-xl border border-amber-500/30 overflow-hidden">
+            <div className="max-h-[400px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-zinc-800/50 sticky top-0">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-zinc-400">Wallet</th>
+                    <th className="px-4 py-3 text-right text-zinc-400">Gems</th>
+                    <th className="px-4 py-3 text-right text-zinc-400">Fee</th>
+                    <th className="px-4 py-3 text-right text-zinc-400">SOL</th>
+                    <th className="px-4 py-3 text-right text-zinc-400">Requested</th>
+                    <th className="px-4 py-3 text-center text-zinc-400">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {data.pendingApprovals.map((w) => (
+                    <tr key={w.withdrawalId} className="hover:bg-zinc-800/30 bg-amber-500/5">
+                      <td className="px-4 py-3 text-zinc-300 font-mono">{truncateAddress(w.walletAddress)}</td>
+                      <td className="px-4 py-3 text-right font-mono text-purple-400">{formatGems(w.gemsAmount)}</td>
+                      <td className="px-4 py-3 text-right font-mono text-zinc-500">{formatGems(w.feeAmount)}</td>
+                      <td className="px-4 py-3 text-right font-mono text-cyan-400">{w.solAmount.toFixed(4)}</td>
+                      <td className="px-4 py-3 text-right text-zinc-500 text-xs">{formatDate(w.requestedAt)}</td>
+                      <td className="px-4 py-3 text-center">
+                        <div className="flex gap-2 justify-center">
+                          <button
+                            onClick={() => setWithdrawalModal({ withdrawalId: w.withdrawalId, action: 'approve', wallet: w.walletAddress, sol: w.solAmount })}
+                            className="px-3 py-1.5 text-xs bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg transition-colors font-medium"
+                          >
+                            ✓ Approve
+                          </button>
+                          <button
+                            onClick={() => setWithdrawalModal({ withdrawalId: w.withdrawalId, action: 'reject', wallet: w.walletAddress, sol: w.solAmount })}
+                            className="px-3 py-1.5 text-xs bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors font-medium"
+                          >
+                            ✗ Reject
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       )}
@@ -811,6 +1021,81 @@ export default function AdminPage() {
                 }`}
               >
                 Confirm {userActionModal.action === 'ban' ? 'Ban' : userActionModal.action === 'suspend' ? 'Suspend' : 'Activate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Withdrawal Approval/Rejection Modal */}
+      {withdrawalModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-zinc-900 rounded-xl border border-zinc-700 p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-white mb-2">
+              {withdrawalModal.action === 'approve' ? '✅ Approve Withdrawal' : '❌ Reject Withdrawal'}
+            </h3>
+            <p className="text-zinc-400 text-sm mb-4">
+              {withdrawalModal.action === 'approve' 
+                ? 'This will approve and IMMEDIATELY process the withdrawal (send SOL to user).'
+                : 'This will reject the withdrawal and refund gems to the user.'}
+            </p>
+            <div className="bg-zinc-800 rounded-lg p-4 mb-4 space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-zinc-500">Wallet:</span>
+                <span className="text-zinc-300 font-mono">{truncateAddress(withdrawalModal.wallet)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-zinc-500">Amount:</span>
+                <span className="text-cyan-400 font-mono">{withdrawalModal.sol.toFixed(4)} SOL</span>
+              </div>
+            </div>
+            
+            {withdrawalModal.action === 'reject' && (
+              <div className="mb-4">
+                <label className="text-zinc-400 text-sm block mb-2">Rejection Reason (optional):</label>
+                <input
+                  type="text"
+                  value={rejectionReason}
+                  onChange={(e) => setRejectionReason(e.target.value)}
+                  placeholder="e.g., Suspicious activity, verification needed"
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:border-red-500"
+                />
+              </div>
+            )}
+            
+            {withdrawalModal.action === 'approve' && (
+              <p className="text-green-400 text-xs mb-4">
+                ✓ SOL will be sent immediately upon approval. Make sure the custodial wallet has sufficient funds.
+              </p>
+            )}
+            {withdrawalModal.action === 'reject' && (
+              <p className="text-red-400 text-xs mb-4">
+                ⚠️ The user&apos;s gems will be refunded immediately upon rejection.
+              </p>
+            )}
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setWithdrawalModal(null); setRejectionReason(''); }}
+                className="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (withdrawalModal.action === 'approve') {
+                    approveWithdrawal(withdrawalModal.withdrawalId);
+                  } else {
+                    rejectWithdrawal(withdrawalModal.withdrawalId, rejectionReason || 'Rejected by admin');
+                  }
+                }}
+                className={`flex-1 px-4 py-2 rounded-lg transition-colors font-medium ${
+                  withdrawalModal.action === 'approve'
+                    ? 'bg-green-500/20 hover:bg-green-500/30 text-green-400'
+                    : 'bg-red-500/20 hover:bg-red-500/30 text-red-400'
+                }`}
+              >
+                {withdrawalModal.action === 'approve' ? 'Approve Withdrawal' : 'Reject & Refund'}
               </button>
             </div>
           </div>

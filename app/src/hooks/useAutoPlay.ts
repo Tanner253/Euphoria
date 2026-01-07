@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react';
-import { GAME_CONFIG } from '@/lib/game/gameConfig';
+import type { ServerConfig } from '@/lib/game/gameConfig';
 
 interface PricePoint {
   price: number;
@@ -27,6 +27,7 @@ interface AutoPlayOptions {
   isMobile: boolean;
   sidebarWidth: number;
   zoomIndex: number;
+  serverConfig: ServerConfig | null;  // From server - NO FALLBACK
   onPlaceBet: (screenX: number, screenY: number) => void;
 }
 
@@ -47,6 +48,7 @@ export function useAutoPlay({
   betAmount,
   isMobile,
   zoomIndex,
+  serverConfig,
   onPlaceBet,
 }: AutoPlayOptions): AutoPlayReturn {
   // Price history for trend analysis
@@ -108,22 +110,23 @@ export function useAutoPlay({
   // Calculate where to place bet based on trend
   const calculateBetPosition = useCallback((): { screenX: number; screenY: number } | null => {
     const canvas = canvasRef.current;
-    if (!canvas || currentPrice === null) return null;
+    // MUST have server config - no fallbacks
+    if (!canvas || currentPrice === null || !serverConfig) return null;
     
     const trend = analyzeTrend();
-    // IMPORTANT: Use zoomed cell size to match game engine
-    const zoomLevel = GAME_CONFIG.ZOOM_LEVELS[zoomIndex] || 1.0;
-    const baseCellSize = isMobile ? GAME_CONFIG.CELL_SIZE_MOBILE : GAME_CONFIG.CELL_SIZE;
+    // Use server config values - single source of truth
+    const zoomLevel = serverConfig.zoomLevels[zoomIndex] || 1.0;
+    const baseCellSize = isMobile ? serverConfig.cellSizeMobile : serverConfig.cellSize;
     const cellSize = Math.floor(baseCellSize * zoomLevel);
-    const headX = isMobile ? GAME_CONFIG.HEAD_X_MOBILE : GAME_CONFIG.HEAD_X;
+    const headX = isMobile ? serverConfig.headXMobile : serverConfig.headX;
     
     // Use the actual minimum bet distance from config
     const minBetColumnsAhead = isMobile 
-      ? GAME_CONFIG.MIN_BET_COLUMNS_AHEAD_MOBILE 
-      : GAME_CONFIG.MIN_BET_COLUMNS_AHEAD;
+      ? serverConfig.minBetColumnsAheadMobile 
+      : serverConfig.minBetColumnsAhead;
     
     // Virtual dimensions (what the game renders to after cameraScale is applied)
-    const cameraScale = isMobile ? GAME_CONFIG.MOBILE_CAMERA_SCALE : 1;
+    const cameraScale = isMobile ? serverConfig.mobileCameraScale : 1;
     const virtualWidth = canvas.width / cameraScale;
     const virtualHeight = canvas.height / cameraScale;
     
@@ -170,7 +173,7 @@ export function useAutoPlay({
       screenX: clampedVirtualX, 
       screenY: clampedVirtualY 
     };
-  }, [canvasRef, currentPrice, isMobile, analyzeTrend]);
+  }, [canvasRef, currentPrice, isMobile, zoomIndex, serverConfig, analyzeTrend]);
   
   // Auto-play loop - INFINITE GEMS mode (no balance check needed)
   useEffect(() => {
@@ -179,15 +182,15 @@ export function useAutoPlay({
     const interval = setInterval(() => {
       const now = Date.now();
       
-      // Human-like betting frequency: 3-8 seconds between bets (slower, more realistic)
-      const minDelay = 3000;
-      const maxDelay = 8000;
+      // Human-like betting frequency: 5-15 seconds between bets (much slower, realistic)
+      const minDelay = 5000;
+      const maxDelay = 15000;
       const randomDelay = minDelay + Math.random() * (maxDelay - minDelay);
       
       if (now - lastBetTimeRef.current < randomDelay) return;
       
-      // Skip sometimes (humans don't bet every possible moment) - 50% skip chance
-      if (Math.random() < 0.5) return;
+      // Skip sometimes (humans don't bet every possible moment) - 60% skip chance
+      if (Math.random() < 0.6) return;
       
       const betPosition = calculateBetPosition();
       if (!betPosition) return;

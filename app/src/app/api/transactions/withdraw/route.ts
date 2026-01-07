@@ -11,96 +11,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedWallet } from '@/lib/auth/jwt';
 import { TransactionService, UserService } from '@/lib/db/services';
-import { Keypair, Connection, PublicKey, Transaction, SystemProgram } from '@solana/web3.js';
-import bs58 from 'bs58';
 import logger from '@/lib/utils/secureLogger';
 import * as WithdrawalQueue from '@/lib/db/models/WithdrawalQueue';
 
 // In-flight request tracking to prevent race conditions
 const processingWithdrawals = new Map<string, Promise<NextResponse>>();
-
-/**
- * Confirm a transaction using HTTP polling instead of WebSocket subscription.
- * This avoids the "t.mask is not a function" error in serverless environments.
- */
-async function confirmTransactionPolling(
-  connection: Connection,
-  signature: string,
-  maxAttempts: number = 30,
-  delayMs: number = 1000
-): Promise<{ confirmed: boolean; error?: string }> {
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      const status = await connection.getSignatureStatus(signature);
-      
-      if (status?.value?.err) {
-        return { confirmed: false, error: `Transaction failed: ${JSON.stringify(status.value.err)}` };
-      }
-      
-      if (status?.value?.confirmationStatus === 'confirmed' || 
-          status?.value?.confirmationStatus === 'finalized') {
-        return { confirmed: true };
-      }
-      
-      // Wait before next poll
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-    } catch (error) {
-      logger.warn('[Withdrawal] Polling attempt failed', { attempt, error });
-      // Continue polling on transient errors
-    }
-  }
-  
-  // Timeout - but transaction may still confirm
-  return { confirmed: false, error: 'Confirmation timeout' };
-}
-
-// SECURITY: Never log the private key - only check if it's configured
-function getCustodialKeypair(): Keypair | null {
-  const privateKey = process.env.CUSTODIAL_WALLET_PRIVATE_KEY;
-  
-  // SECURITY: Never log the private key or any information about it
-  if (!privateKey) {
-    logger.error('[Withdrawal] Custodial wallet not configured');
-    return null;
-  }
-  
-  try {
-    const decoded = bs58.decode(privateKey);
-    return Keypair.fromSecretKey(decoded);
-  } catch {
-    // SECURITY: Generic error - do not expose any details about the key
-    logger.error('[Withdrawal] Custodial wallet configuration error');
-    return null;
-  }
-}
-
-/**
- * Check if custodial wallet has enough balance for immediate payout
- */
-async function canProcessImmediately(lamportsNeeded: number): Promise<boolean> {
-  const keypair = getCustodialKeypair();
-  if (!keypair) return false;
-  
-  try {
-    const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-    const connection = new Connection(rpcUrl, 'confirmed');
-    const balance = await connection.getBalance(keypair.publicKey);
-    
-    // Need lamports + buffer for tx fee (5000 lamports ~= 0.000005 SOL)
-    const totalNeeded = lamportsNeeded + 5000;
-    
-    logger.info('[Withdrawal] Balance check', {
-      balance: balance / 1e9,
-      needed: totalNeeded / 1e9,
-      canAfford: balance >= totalNeeded
-    });
-    
-    return balance >= totalNeeded;
-  } catch (error) {
-    logger.error('[Withdrawal] Balance check failed', error);
-    return false;
-  }
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -187,87 +102,7 @@ async function processWithdrawal(walletAddress: string, gemsAmount: number): Pro
     
     const lamports = result.solAmount!;
     
-    // Check if we can process immediately
-    const canProcessNow = await canProcessImmediately(lamports);
-    
-    if (canProcessNow) {
-      // Try immediate payout
-      const custodialKeypair = getCustodialKeypair();
-      
-      if (custodialKeypair) {
-        try {
-          const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-          const connection = new Connection(rpcUrl, 'confirmed');
-          
-          const destinationPubkey = new PublicKey(walletAddress);
-          
-          // Get recent blockhash
-          const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-          
-          const transaction = new Transaction({
-            recentBlockhash: blockhash,
-            feePayer: custodialKeypair.publicKey,
-          }).add(
-            SystemProgram.transfer({
-              fromPubkey: custodialKeypair.publicKey,
-              toPubkey: destinationPubkey,
-              lamports,
-            })
-          );
-          
-          // Sign and send (without WebSocket confirmation)
-          transaction.sign(custodialKeypair);
-          const signature = await connection.sendRawTransaction(transaction.serialize(), {
-            skipPreflight: false,
-            preflightCommitment: 'confirmed',
-          });
-          
-          // Confirm using HTTP polling (avoids WebSocket issues in serverless)
-          const confirmation = await confirmTransactionPolling(connection, signature);
-          
-          if (!confirmation.confirmed) {
-            // Transaction sent but confirmation uncertain - still mark as completed
-            // The transaction is on-chain, just confirmation timed out
-            logger.warn('[Withdrawal] Confirmation timeout, marking completed anyway', {
-              wallet: walletAddress.slice(0, 8),
-              signature: signature.slice(0, 16),
-              lastValidBlockHeight
-            });
-          }
-          
-          // Confirm in database (regardless of polling result - tx was sent)
-          await transactionService.confirmWithdrawal(
-            result.transaction!._id!.toString(),
-            signature
-          );
-          
-          logger.info('[Withdrawal] Instant success', { 
-            wallet: walletAddress.slice(0, 8),
-            sol: lamports / 1e9
-          });
-          
-          return NextResponse.json({
-            success: true,
-            status: 'completed',
-            transaction: {
-              id: result.transaction!._id?.toString(),
-              gemsAmount,
-              solAmount: lamports / 1e9,
-              txSignature: signature,
-              status: 'confirmed'
-            }
-          });
-          
-        } catch {
-          // Transaction failed - fall through to queue
-          logger.warn('[Withdrawal] Instant payout failed, queueing', {
-            wallet: walletAddress.slice(0, 8)
-          });
-        }
-      }
-    }
-    
-    // Queue the withdrawal (either no funds or transaction failed)
+    // ALL withdrawals now require admin approval - queue with 'awaiting_approval' status
     const queueItem = await WithdrawalQueue.createWithdrawalRequest({
       walletAddress,
       gemsAmount,
@@ -276,24 +111,24 @@ async function processWithdrawal(walletAddress: string, gemsAmount: number): Pro
       solAmount: lamports,
     });
     
-    logger.info('[Withdrawal] Queued', {
+    logger.info('[Withdrawal] Awaiting admin approval', {
       wallet: walletAddress.slice(0, 8),
-      position: queueItem.queuePosition,
+      withdrawalId: queueItem.withdrawalId,
       sol: lamports / 1e9
     });
     
     return NextResponse.json({
       success: true,
-      status: 'queued',
+      status: 'awaiting_approval',
       withdrawalId: queueItem.withdrawalId,
       queuePosition: queueItem.queuePosition,
       transaction: {
         id: result.transaction!._id?.toString(),
         gemsAmount,
         solAmount: lamports / 1e9,
-        status: 'queued'
+        status: 'awaiting_approval'
       },
-      message: `Withdrawal queued at position #${queueItem.queuePosition}. You'll receive ${(lamports / 1e9).toFixed(4)} SOL when funds are available.`
+      message: `Withdrawal request submitted. Awaiting admin approval. You'll receive ${(lamports / 1e9).toFixed(4)} SOL once approved and processed.`
     });
     
   } catch (error) {
@@ -362,7 +197,7 @@ export async function GET(request: NextRequest) {
         queuePosition: pendingWithdrawal.queuePosition,
         status: pendingWithdrawal.status,
         requestedAt: pendingWithdrawal.requestedAt,
-        canCancel: pendingWithdrawal.status === 'pending'
+        canCancel: pendingWithdrawal.status === 'awaiting_approval' || pendingWithdrawal.status === 'pending'
       } : null
     });
     

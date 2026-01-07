@@ -162,6 +162,8 @@ export type AuditAction =
   | 'deposit_confirmed'
   | 'withdrawal_initiated'
   | 'withdrawal_confirmed'
+  | 'withdrawal_approved'
+  | 'withdrawal_rejected'
   | 'bet_placed'
   | 'bet_resolved'
   | 'balance_adjusted'
